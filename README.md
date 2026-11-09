@@ -1,4 +1,6 @@
-# SMFTP
+# SMFTP ? V1
+
+Premi?re version publique : **V1 (1.0.0)**. Client de transfert exp?rimental ; les d?fauts connus sont d?taill?s dans le bilan d?audit ci-dessous.
 
 Client de bureau natif Python / PySide6, en français. Le design reprend la lisibilité de Cyberduck, l’explorateur à deux panneaux de Transmit et la barre latérale, les onglets et les accents bleus de VS Code. Il ne réutilise pas leurs marques ni leurs ressources graphiques.
 

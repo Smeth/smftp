@@ -78,7 +78,7 @@ class WorkspaceFeatures:
         help_menu = self.menuBar().addMenu(self.tr("Aide"))
         self.add_command(help_menu, "Documentation et raccourcis", self.show_help, "F1")
         self.add_command(help_menu, "Diagnostic", self.show_diagnostic)
-        self.add_command(help_menu, "À propos", lambda: QMessageBox.information(self, "SMFTP", self.tr("SMFTP 0.2\nClient FTP, FTPS et SFTP pour le bureau.")))
+        self.add_command(help_menu, "À propos", lambda: QMessageBox.information(self, "SMFTP", self.tr("SMFTP V1 (1.0.0)\nClient FTP, FTPS et SFTP pour le bureau.")))
         self.remote.file_opened.connect(lambda: self.edit_remote(False))
         order = ["Fichier", "Édition", "Affichage", "Serveurs", "Transferts", "Outils", "Aide"]
         actions = list(self.menuBar().actions())
@@ -395,6 +395,6 @@ class WorkspaceFeatures:
         except Exception:
             backend = self.tr("Indisponible")
         QMessageBox.information(self, self.tr("Diagnostic"),
-            f"SMFTP 0.2\nPython {platform.python_version()}\nQt / PySide6 {__version__}\n"
+            f"SMFTP V1 (1.0.0)\nPython {platform.python_version()}\nQt / PySide6 {__version__}\n"
             f"{platform.system()} {platform.release()}\nCoffre-fort : {backend}\nDonnées : {data_dir()}\n"
             f"File : {len(self.transfers.records)} tâche(s)")
