@@ -31,3 +31,10 @@ QScrollBar::handle:vertical { background: #38465d; min-height: 24px; border-radi
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
 QSpinBox::up-button, QSpinBox::down-button { border: none; background: #263143; width: 15px; }
+
+/* Prominent navigation, with availability visible at a glance. */
+QPushButton#navigation { background: #263e63; color: #c4d8ff; border: 1px solid #537db6; padding: 0px; font-size: 24px; font-weight: 700; }
+QPushButton#navigation:hover { background: #345584; border-color: #91b7ff; }
+QPushButton#navigation:pressed { background: #41689e; }
+QPushButton#navigation:focus { border: 2px solid #91b7ff; }
+QPushButton#navigation:disabled { background: #1c222d; color: #566176; border-color: #293242; }

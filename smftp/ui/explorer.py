@@ -91,12 +91,21 @@ class Explorer(QWidget):
         title.addWidget(self.count)
         layout.addLayout(title)
         nav = QHBoxLayout()
-        for label, callback in [("‹", lambda: self.travel(-1)), ("›", lambda: self.travel(1)),
-                                ("↑", self.parent_folder), ("↻", self.refresh)]:
+        self.navigation_buttons = []
+        for label, title, callback in [
+                ("←", "Dossier précédent", lambda: self.travel(-1)),
+                ("→", "Dossier suivant", lambda: self.travel(1)),
+                ("↑", "Dossier parent", self.parent_folder),
+                ("↻", "Actualiser", self.refresh)]:
             button = QPushButton(label)
-            button.setFixedWidth(32)
+            button.setObjectName("navigation")
+            button.setFixedSize(40, 40)
+            button.setToolTip(self.tr(title))
+            button.setAccessibleName(self.tr(title))
             button.clicked.connect(callback)
+            self.navigation_buttons.append(button)
             nav.addWidget(button)
+        self.update_navigation()
         self.address = QLineEdit(self.path)
         self.address.setPlaceholderText(self.tr("Chemin du dossier"))
         self.address.returnPressed.connect(lambda: self.navigate(self.address.text()))
@@ -202,6 +211,17 @@ class Explorer(QWidget):
             button.clicked.connect(lambda checked=False, p=target: self.navigate(p))
             self.crumbs.addWidget(button)
         self.crumbs.addStretch()
+        self.update_navigation()
+
+    def update_navigation(self) -> None:
+        back, forward, parent, refresh = self.navigation_buttons
+        back.setEnabled(self.position > 0)
+        forward.setEnabled(0 <= self.position < len(self.history) - 1)
+        connected = not self.remote or self.position >= 0
+        parent.setEnabled(connected and (
+            posixpath.normpath(self.path) != "/" if self.remote
+            else Path(self.path).parent != Path(self.path)))
+        refresh.setEnabled(connected)
 
     def travel(self, offset: int) -> None:
         target = self.position + offset
