@@ -425,6 +425,6 @@ class WorkspaceFeatures:
         elif status == "current":
             QMessageBox.information(self, self.tr("Mises à jour"), self.tr("Vous utilisez déjà la dernière version ({version}).").format(version=result["version"]))
         elif status == "none":
-            QMessageBox.information(self, self.tr("Mises à jour"), self.tr("Aucune version n’a encore été publiée sur GitHub."))
+            QMessageBox.information(self, self.tr("Mises à jour"), self.tr("Aucune nouvelle mise à jour disponible."))
         else:
             QMessageBox.warning(self, self.tr("Vérification impossible"), self.tr("Impossible de vérifier les mises à jour. Vérifiez votre connexion Internet puis réessayez.\n\n{detail}").format(detail=result.get("detail", "")))
