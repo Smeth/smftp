@@ -1,5 +1,7 @@
 """SMFTP desktop entry point."""
 import sys
+from pathlib import Path
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 from smftp.ui.main_window import MainWindow
 from smftp.utils.storage import configure_logging
@@ -9,9 +11,9 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("SMFTP")
     app.setOrganizationName("SMFTP")
+    app.setWindowIcon(QIcon(str(Path(__file__).resolve().parent / "resources" / "sf-icon.png")))
     from PySide6.QtCore import QTranslator, QLibraryInfo
     translator = QTranslator(app)
-    from pathlib import Path
     local_translations = str(Path(__file__).resolve().parent / "resources" / "translations")
     if (translator.load("qtbase_fr", local_translations) or
         translator.load("qtbase_fr", QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath))):

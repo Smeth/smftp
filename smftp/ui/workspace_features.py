@@ -78,6 +78,7 @@ class WorkspaceFeatures:
         help_menu = self.menuBar().addMenu(self.tr("Aide"))
         self.add_command(help_menu, "Documentation et raccourcis", self.show_help, "F1")
         self.add_command(help_menu, "Diagnostic", self.show_diagnostic)
+        self.add_command(help_menu, "Rechercher les mises à jour…", self.check_for_updates)
         self.add_command(help_menu, "À propos", lambda: QMessageBox.information(self, "SMFTP", self.tr("SMFTP V1 (1.0.0)\nClient FTP, FTPS et SFTP pour le bureau.")))
         self.remote.file_opened.connect(lambda: self.edit_remote(False))
         order = ["Fichier", "Édition", "Affichage", "Serveurs", "Transferts", "Outils", "Aide"]
@@ -398,3 +399,32 @@ class WorkspaceFeatures:
             f"SMFTP V1 (1.0.0)\nPython {platform.python_version()}\nQt / PySide6 {__version__}\n"
             f"{platform.system()} {platform.release()}\nCoffre-fort : {backend}\nDonnées : {data_dir()}\n"
             f"File : {len(self.transfers.records)} tâche(s)")
+
+    def check_for_updates(self):
+        from smftp.workers.updates import UpdateWorker
+
+        if getattr(self, "update_worker", None) and self.update_worker.isRunning():
+            return
+        self.update_worker = UpdateWorker(self)
+        self.update_worker.completed.connect(self._show_update_result)
+        self.update_worker.start()
+
+    def _show_update_result(self, result):
+        from PySide6.QtGui import QDesktopServices
+
+        status = result["status"]
+        if status == "update":
+            answer = QMessageBox.question(
+                self, self.tr("Mise à jour disponible"),
+                self.tr("La version {version} est disponible sur GitHub.\n\nOuvrir la page de téléchargement ?").format(version=result["version"]),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                QDesktopServices.openUrl(QUrl(result["url"]))
+        elif status == "current":
+            QMessageBox.information(self, self.tr("Mises à jour"), self.tr("Vous utilisez déjà la dernière version ({version}).").format(version=result["version"]))
+        elif status == "none":
+            QMessageBox.information(self, self.tr("Mises à jour"), self.tr("Aucune version n’a encore été publiée sur GitHub."))
+        else:
+            QMessageBox.warning(self, self.tr("Vérification impossible"), self.tr("Impossible de vérifier les mises à jour. Vérifiez votre connexion Internet puis réessayez.\n\n{detail}").format(detail=result.get("detail", "")))
