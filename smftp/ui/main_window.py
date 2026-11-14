@@ -142,7 +142,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         workspace.addWidget(main)
         workspace.setSizes([220, 1160])
         self.statusBar().showMessage(self.tr("●  Déconnecté    •    Prêt à explorer"))
-        self.statusBar().addPermanentWidget(QLabel("SMFTP  /  V1"))
+        from smftp.workers.updates import CURRENT_VERSION
+        self.statusBar().addPermanentWidget(QLabel(f"SMFTP  /  {CURRENT_VERSION}"))
         self.speed_label = QLabel("0 o/s")
         self.statusBar().addPermanentWidget(self.speed_label)
         self.thread = QThread(self)

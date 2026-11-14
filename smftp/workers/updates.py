@@ -7,7 +7,7 @@ import urllib.request
 from PySide6.QtCore import QThread, Signal
 
 
-CURRENT_VERSION = "1.0.0"
+CURRENT_VERSION = "1.1.0"
 RELEASES_API = "https://api.github.com/repos/Smeth/smftp/releases/latest"
 
 
