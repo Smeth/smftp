@@ -19,6 +19,13 @@ class UnknownHostError(Exception):
         self.host, self.key_type, self.key, self.fingerprint = host, key_type, key, fingerprint
 
 
+class DestinationExists(FileExistsError):
+    def __init__(self, source: str, target: str):
+        super().__init__(f"La destination existe déjà : {target}")
+        self.source = source
+        self.target = target
+
+
 class BaseClient(ABC):
     def __init__(self, reporter=None):
         self.reporter = reporter
@@ -48,6 +55,25 @@ class BaseClient(ABC):
 
     def rename(self, source: str, target: str) -> None:
         raise NotImplementedError
+
+    def overwrite_move(self, source: str, target: str) -> None:
+        """Move a file onto an existing file; servers that refuse keep both intact."""
+        self.rename(source, target)
+
+    def move(self, source: str, target: str, replace: bool = False) -> None:
+        """Rename/move without silently replacing an existing destination."""
+        if posixpath.normpath(source) == posixpath.normpath(target):
+            return
+        existing = self.exists(target)
+        if existing is None:
+            self.rename(source, target)
+            return
+        if not replace:
+            raise DestinationExists(source, target)
+        moving = self.exists(source)
+        if existing.is_dir or (moving and moving.is_dir):
+            raise IsADirectoryError("Le remplacement d’un dossier n’est pas pris en charge : renommez ou supprimez d’abord la destination.")
+        self.overwrite_move(source, target)
 
     def remove(self, path: str, directory: bool = False) -> None:
         if directory:
@@ -243,6 +269,10 @@ class SFTPClient(BaseClient):
 
     def rename(self, source, target):
         self.sftp.rename(source, target)
+
+    def overwrite_move(self, source, target):
+        # Atomic OpenSSH extension; the moved file keeps its own permissions.
+        self.sftp.posix_rename(source, target)
 
     def replace(self, source, target):
         if self.exists(target) is None:

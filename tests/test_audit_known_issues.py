@@ -70,7 +70,7 @@ def test_repeated_save_must_preserve_pending_upload(tmp_path, monkeypatch):
     try:
         window.save_remote(record)
         window.save_remote(record)
-        assert window.pending_saves.get("/file.txt") is record
+        assert [r for r in window.pending_saves.values() if r is record] == [record]
     finally:
         close_window(window)
 

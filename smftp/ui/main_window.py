@@ -23,7 +23,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
     list_requested = Signal(str)
     disconnect_requested = Signal()
     operation_requested = Signal(str, object)
-    inspect_requested = Signal(str)
+    inspect_requested = Signal(str, str, str)  # token, remote path, connection identity
     command_requested = Signal(str)
 
     def __init__(self):
@@ -40,7 +40,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.edit_uploads = {}
         self.editors = []
         self.edit_records = {}
-        self.pending_saves = {}
+        self.pending_saves = {}  # inspection token -> edit record
+        self.inspection_counter = 0
         self.temp_dirs = []
         self.watcher = QFileSystemWatcher(self)
         self.watcher.fileChanged.connect(self.external_changed)
@@ -150,6 +151,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.command_requested.connect(self.session.command)
         self.session.inspected.connect(self.inspected_file)
         self.session.inspect_failed.connect(self.inspection_failed)
+        self.session.move_conflict.connect(self.move_conflict)
         self.session.connected.connect(self.on_connected)
         self.session.progress.connect(self.log)
         self.session.listed.connect(self.on_listed)
@@ -320,6 +322,20 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.remote.set_entries(path, entries)
         self.log(self.tr("Dossier distant chargé : %n élément(s).", "", len(entries)))
 
+    def move_conflict(self, source, target):
+        """The session refused to move onto an existing destination: ask explicitly."""
+        import posixpath
+        self.busy = False
+        answer = QMessageBox.question(self, self.tr("Destination existante"),
+            self.tr("« %s » existe déjà dans %s.\n\nRemplacer ce fichier par « %s » ? Le fichier remplacé sera perdu.")
+            % (posixpath.basename(target), posixpath.dirname(target) or "/", posixpath.basename(source)),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if answer == QMessageBox.StandardButton.Yes:
+            self.busy = True
+            self.operation_requested.emit("replace", [source, target])
+        else:
+            self.log(self.tr("Déplacement annulé : %s existe déjà.") % target)
+
     def operation_completed(self):
         self.busy = False
         self.refresh()
@@ -343,9 +359,14 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             self.open_downloaded(record)
         if id(task) in self.edit_uploads:
             record = self.edit_uploads.pop(id(task))
-            record["refresh_baseline"] = True
-            self.pending_saves[record["remote"]] = record
-            self.inspect_requested.emit(record["remote"])
+            if self.online and self.connection and self.connection.identity == record["connection"].identity:
+                record["refresh_baseline"] = True
+                self.request_inspection(record)
+            else:
+                # The browsing session now targets another server: never inspect the
+                # same path there. The next save will ask before overwriting.
+                record["baseline_unknown"] = True
+                self.edit_sent(record)
         self.refresh()
 
     def transfer_outcome(self, task, status):
@@ -669,39 +690,56 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         if not self.online or record["connection"].identity != self.connection.identity:
             self.on_error(self.tr("Reconnectez le serveur d’origine avant d’envoyer ce fichier."))
             return
-        if record["remote"] in self.pending_saves or any(r is record for r in self.edit_uploads.values()):
+        if any(r is record for r in self.pending_saves.values()) or any(r is record for r in self.edit_uploads.values()):
             # Keep the running save intact and send the newest copy once it completes.
             record["save_again"] = True
             self.log(self.tr("Un envoi est déjà en cours pour %s : la nouvelle version sera envoyée ensuite.") % record["remote"])
             return
-        self.pending_saves[record["remote"]] = record
-        self.inspect_requested.emit(record["remote"])
+        self.request_inspection(record)
 
-    def inspected_file(self, path, entry):
-        record = self.pending_saves.pop(path, None)
+    def request_inspection(self, record):
+        """Inspect the remote file of this edit record on its own server only."""
+        self.inspection_counter += 1
+        token = f"edit-{self.inspection_counter}"
+        self.pending_saves[token] = record
+        self.inspect_requested.emit(token, record["remote"], record["connection"].identity)
+
+    def edit_sent(self, record):
+        record["unsent"] = False
+        if record.get("editor"):
+            record["editor"].message.setText(self.tr("Modifications envoyées au serveur."))
+        if record.pop("save_again", False):
+            self.save_remote(record)
+
+    def inspected_file(self, token, entry):
+        record = self.pending_saves.pop(token, None)
         if not record:
             return
         baseline = (entry.size, entry.modified) if entry else None
         if record.pop("refresh_baseline", False):
             record["baseline"] = baseline
-            record["unsent"] = False
-            if record.get("editor"):
-                record["editor"].message.setText(self.tr("Modifications envoyées au serveur."))
-            if record.pop("save_again", False):
-                self.save_remote(record)
+            record.pop("baseline_unknown", None)
+            self.edit_sent(record)
             return
-        if baseline != record["baseline"]:
-            if QMessageBox.question(self, self.tr("Fichier distant modifié"), self.tr("Le fichier a changé sur le serveur. Écraser cette version ?"), QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+        if record.get("baseline_unknown"):
+            question = self.tr("La version distante n’a pas pu être relevée après le dernier envoi (connexion changée). Envoyer quand même et écraser le fichier distant ?")
+        elif baseline != record["baseline"]:
+            question = self.tr("Le fichier a changé sur le serveur. Écraser cette version ?")
+        else:
+            question = None
+        if question:
+            if QMessageBox.question(self, self.tr("Fichier distant modifié"), question, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
                 record.pop("save_again", None)
                 return
+        record.pop("baseline_unknown", None)
         # Any save requested from now on is included in this upload, which reads the file when it starts.
         record.pop("save_again", None)
         task = Transfer(record["connection"], record["local"], record["remote"], True, conflict="overwrite")
         self.edit_uploads[id(task)] = record
         self.transfers.add(task, transient=True)
 
-    def inspection_failed(self, path):
-        record = self.pending_saves.pop(path, None)
+    def inspection_failed(self, token):
+        record = self.pending_saves.pop(token, None)
         if record:
             record.pop("save_again", None)
             if record.get("editor"):

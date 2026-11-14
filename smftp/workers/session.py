@@ -1,7 +1,7 @@
 """Serialized network operations running outside the GUI thread."""
 import logging
 from PySide6.QtCore import QObject, Signal, Slot
-from smftp.core.clients import FTPClient, FTPSClient, SFTPClient, UnknownHostError
+from smftp.core.clients import FTPClient, FTPSClient, SFTPClient, UnknownHostError, DestinationExists
 from smftp.models.entries import Connection
 from smftp.utils.storage import data_dir
 from smftp.core.errors import describe_error
@@ -15,8 +15,9 @@ class Session(QObject):
     host_unknown = Signal(object)
     disconnected = Signal()
     operated = Signal()
-    inspected = Signal(str, object)
-    inspect_failed = Signal(str)
+    inspected = Signal(str, object)  # token, entry
+    inspect_failed = Signal(str)  # token
+    move_conflict = Signal(str, str)  # source, existing target
 
     def __init__(self):
         super().__init__()
@@ -66,28 +67,39 @@ class Session(QObject):
 
     @Slot(str, object)
     def operate(self, operation, arguments):
-        self.operation = {"mkdir": "Création de dossier", "rename": "Déplacement / renommage", "remove": "Suppression", "chmod": "Modification des permissions"}.get(operation, operation)
+        self.operation = {"mkdir": "Création de dossier", "rename": "Déplacement / renommage", "replace": "Remplacement", "remove": "Suppression", "chmod": "Modification des permissions"}.get(operation, operation)
         if not self.client:
             self.failed.emit("Connectez d’abord un serveur.")
             return
         try:
-            if operation not in ("mkdir", "rename", "remove", "chmod"):
+            if operation == "rename":
+                # Never let the server silently replace an existing destination.
+                self.client.move(*arguments, replace=False)
+            elif operation == "replace":
+                self.client.move(*arguments, replace=True)
+            elif operation in ("mkdir", "remove", "chmod"):
+                getattr(self.client, operation)(*arguments)
+            else:
                 raise ValueError
-            getattr(self.client, operation)(*arguments)
             self.operated.emit()
+        except DestinationExists as error:
+            self.move_conflict.emit(error.source, error.target)
         except Exception as error:
             self.report(error)
 
-    @Slot(str)
-    def inspect_path(self, path):
+    @Slot(str, str, str)
+    def inspect_path(self, token, path, identity):
         self.operation = "Vérification du fichier distant"
         try:
-            if not self.client:
-                raise ConnectionError
-            self.inspected.emit(path, self.client.exists(path))
+            if not self.client or not self.connection:
+                raise ConnectionError("Aucune session ouverte.")
+            if self.connection.identity != identity:
+                # The same path on another server is a different file.
+                raise ConnectionError("La session ouverte ne correspond plus au serveur d’origine de ce fichier.")
+            self.inspected.emit(token, self.client.exists(path))
         except Exception as error:
             # Release only this pending save before the generic diagnostic.
-            self.inspect_failed.emit(path)
+            self.inspect_failed.emit(token)
             self.report(error)
 
     @Slot(str)
