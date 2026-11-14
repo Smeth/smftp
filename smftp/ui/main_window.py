@@ -62,6 +62,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         toolbar.addWidget(subtitle)
         toolbar.addStretch()
         theme = QPushButton(self.tr("◐  Apparence"))
+        theme.setAccessibleName(self.tr("Apparence : basculer le thème clair ou sombre"))
         theme.clicked.connect(self.toggle_theme)
         toolbar.addWidget(theme)
         self.disconnect_button = QPushButton(self.tr("Déconnecter"))
@@ -69,6 +70,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.disconnect_button.clicked.connect(self.disconnect_session)
         toolbar.addWidget(self.disconnect_button)
         self.connect_button = QPushButton(self.tr("＋  Nouvelle connexion"))
+        self.connect_button.setAccessibleName(self.tr("Nouvelle connexion"))
         self.connect_button.setObjectName("primary")
         self.connect_button.clicked.connect(lambda: self.new_connection())
         toolbar.addWidget(self.connect_button)
@@ -93,6 +95,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.site_list.customContextMenuRequested.connect(self.site_context_menu)
         side.addWidget(self.site_list)
         add = QPushButton(self.tr("＋  Ajouter un serveur"))
+        add.setAccessibleName(self.tr("Ajouter un serveur"))
         add.clicked.connect(lambda: self.new_connection())
         side.addWidget(add)
         note = QLabel(self.tr("VOTRE ESPACE, CONNECTÉ\n\nSFTP · FTPS · FTP\nIdentifiants dans votre\ncoffre-fort système."))
@@ -506,7 +509,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                     current = Path(selected[0][0]).lstat().st_mode & 0o7777
                 except OSError:
                     current = None
-            dialog = PermissionsDialog(self, current)
+            dialog = PermissionsDialog(self, current, selected[0][1], posixpath.basename(selected[0][0]) if panel.remote else Path(selected[0][0]).name)
             if not dialog.exec():
                 return
             arguments = [selected[0][0], dialog.mode()]

@@ -18,12 +18,15 @@ class SearchWorker(QThread):
         super().__init__(parent)
         self.root, self.pattern, self.connection = root, pattern.casefold(), connection
         self.count = 0
+        self.limit_reached = False
+        self.unreadable = 0  # Folders that could not be listed.
 
     def emit_match(self, path, entry):
         if fnmatch.fnmatch(entry.name.casefold(), self.pattern):
             self.found.emit(path, entry)
             self.count += 1
             if self.count >= 10000:
+                self.limit_reached = True
                 self.requestInterruption()
 
     def run(self):
@@ -36,7 +39,14 @@ class SearchWorker(QThread):
                 stack = [self.root]
                 while stack and not self.isInterruptionRequested():
                     root = stack.pop()
-                    for item in client.listdir(root):
+                    try:
+                        items = client.listdir(root)
+                    except Exception:
+                        if root == self.root:
+                            raise
+                        self.unreadable += 1
+                        continue
+                    for item in items:
                         if item.name in (".", "..") or any(c in item.name for c in "/\\:"):
                             continue
                         path = posixpath.join(root, item.name)
@@ -44,7 +54,9 @@ class SearchWorker(QThread):
                         if item.is_dir and not item.permissions.startswith("l"):
                             stack.append(path)
             else:
-                for root, directories, files in os.walk(self.root, followlinks=False):
+                def denied(error):
+                    self.unreadable += 1
+                for root, directories, files in os.walk(self.root, onerror=denied, followlinks=False):
                     if self.isInterruptionRequested():
                         break
                     directories[:] = [name for name in directories if not (Path(root) / name).is_symlink()]

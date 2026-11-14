@@ -80,7 +80,7 @@ class WorkspaceFeatures:
         self.add_command(help_menu, "Documentation et raccourcis", self.show_help, "F1")
         self.add_command(help_menu, "Diagnostic", self.show_diagnostic)
         self.add_command(help_menu, "Rechercher les mises à jour…", self.check_for_updates)
-        self.add_command(help_menu, "À propos", lambda: QMessageBox.information(self, "SMFTP", self.tr("SMFTP V1 (1.0.0)\nClient FTP, FTPS et SFTP pour le bureau.")))
+        self.add_command(help_menu, "À propos", self.show_about)
         self.remote.file_opened.connect(lambda: self.edit_remote(False))
         order = ["Fichier", "Édition", "Affichage", "Serveurs", "Transferts", "Outils", "Aide"]
         actions = list(self.menuBar().actions())
@@ -367,17 +367,47 @@ class WorkspaceFeatures:
         worker = SearchWorker(panel.path, pattern, self.connection if panel.remote else None, self)
         self.search_workers.append(worker)
         from smftp.ui.explorer import size_label
-        worker.found.connect(lambda path, entry: table.addTopLevelItem(QTreeWidgetItem([path, "Dossier" if entry.is_dir else "Fichier", size_label(entry.size)])))
+        worker.found.connect(lambda path, entry: table.addTopLevelItem(QTreeWidgetItem([path, "Dossier" if entry.is_dir else "Fichier", "—" if entry.is_dir else size_label(entry.size)])))
         worker.failed.connect(self.on_error)
-        worker.finished.connect(lambda: label.setText(self.tr("Recherche terminée : %n résultat(s).", "", table.topLevelItemCount())))
+        stopped_by_user = []
+
+        def finished():
+            count = table.topLevelItemCount()
+            if worker.limit_reached:
+                text = self.tr("Recherche interrompue : limite de 10 000 résultats atteinte. Affinez le motif.")
+            elif stopped_by_user:
+                text = self.tr("Recherche arrêtée : %n résultat(s) trouvé(s) avant l’arrêt, liste incomplète.", "", count)
+            else:
+                text = self.tr("Recherche terminée : %n résultat(s).", "", count)
+            if worker.unreadable:
+                text += " " + self.tr("%n dossier(s) inaccessible(s) ignoré(s).", "", worker.unreadable)
+            label.setText(text)
+            stop.setEnabled(False)
+
         def navigate(item, column):
             path = item.text(0)
             panel.search.clear()
-            panel.navigate(posixpath.dirname(path) if panel.remote else str(Path(path).parent))
+            if panel.remote:
+                panel.reveal(posixpath.dirname(path) or "/", posixpath.basename(path))
+            else:
+                panel.reveal(str(Path(path).parent), Path(path).name)
+
+        def request_stop():
+            stopped_by_user.append(True)
+            worker.requestInterruption()
+
         table.itemDoubleClicked.connect(navigate)
+        table.setToolTip(self.tr("Double-cliquez pour afficher l’élément dans son dossier."))
+        row = QHBoxLayout()
         stop = QPushButton(self.tr("Arrêter"))
-        stop.clicked.connect(worker.requestInterruption)
-        layout.addWidget(stop)
+        stop.clicked.connect(request_stop)
+        close = QPushButton(self.tr("Fermer"))
+        close.clicked.connect(dialog.close)
+        row.addStretch()
+        row.addWidget(stop)
+        row.addWidget(close)
+        layout.addLayout(row)
+        worker.finished.connect(finished)
         dialog.finished.connect(worker.requestInterruption)
         worker.start()
         dialog.show()
@@ -418,6 +448,18 @@ class WorkspaceFeatures:
         self.activity_tabs.setCurrentWidget(self.logs)
         self.command_requested.emit(command.strip())
 
+    def show_about(self):
+        from smftp.workers.updates import CURRENT_VERSION
+        box = QMessageBox(self)
+        box.setWindowTitle(self.tr("À propos de SMFTP"))
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText(self.tr("<b>SMFTP %s</b><br>Client FTP, FTPS et SFTP pour le bureau.<br><br>"
+                            "Code source : <a href=\"https://github.com/Smeth/smftp\">github.com/Smeth/smftp</a><br>"
+                            "Licence : aucune licence n’a encore été choisie pour ce projet.<br>"
+                            "Composants : Qt / PySide6 (LGPL), Paramiko (LGPL), keyring (MIT).") % CURRENT_VERSION)
+        box.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        box.exec()
+
     def show_diagnostic(self):
         import platform
         from PySide6 import __version__
@@ -427,10 +469,44 @@ class WorkspaceFeatures:
             backend = type(keyring.get_keyring()).__name__
         except Exception:
             backend = self.tr("Indisponible")
-        QMessageBox.information(self, self.tr("Diagnostic"),
-            f"SMFTP V1 (1.0.0)\nPython {platform.python_version()}\nQt / PySide6 {__version__}\n"
-            f"{platform.system()} {platform.release()}\nCoffre-fort : {backend}\nDonnées : {data_dir()}\n"
-            f"File : {len(self.transfers.records)} tâche(s)")
+        from smftp.workers.updates import CURRENT_VERSION
+        import paramiko
+        text = (f"SMFTP {CURRENT_VERSION}\nPython {platform.python_version()}\nQt / PySide6 {__version__}\n"
+                f"Paramiko {paramiko.__version__} • keyring {getattr(keyring, '__version__', '?')}\n"
+                f"{platform.system()} {platform.release()} ({platform.machine()})\n"
+                f"Coffre-fort : {backend}\nDonnées : {data_dir()}\n"
+                f"Connexion : {self.connection.protocol + ' ' + self.connection.host if self.online and self.connection else 'aucune'}\n"
+                f"File : {len(self.transfers.records)} tâche(s)")
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self.tr("Diagnostic"))
+        layout = QVBoxLayout(dialog)
+        from PySide6.QtWidgets import QPlainTextEdit
+        view = QPlainTextEdit(text)
+        view.setReadOnly(True)
+        view.setAccessibleName(self.tr("Informations de diagnostic"))
+        view.setMinimumSize(520, 220)
+        layout.addWidget(view)
+        row = QHBoxLayout()
+        copy = QPushButton(self.tr("Copier"))
+        copy.clicked.connect(lambda: (QApplication.clipboard().setText(text), copy.setText(self.tr("Copié ✓"))))
+        save = QPushButton(self.tr("Enregistrer…"))
+        def save_report():
+            from PySide6.QtWidgets import QFileDialog
+            filename, _ = QFileDialog.getSaveFileName(dialog, self.tr("Enregistrer le diagnostic"), "smftp-diagnostic.txt", "Texte (*.txt)")
+            if filename:
+                try:
+                    Path(filename).write_text(text, encoding="utf-8")
+                except OSError:
+                    self.on_error(self.tr("Impossible d’enregistrer ce fichier."))
+        save.clicked.connect(save_report)
+        close = QPushButton(self.tr("Fermer"))
+        close.clicked.connect(dialog.accept)
+        row.addWidget(copy)
+        row.addWidget(save)
+        row.addStretch()
+        row.addWidget(close)
+        layout.addLayout(row)
+        dialog.exec()
 
     def check_for_updates(self):
         from smftp.workers.updates import UpdateWorker

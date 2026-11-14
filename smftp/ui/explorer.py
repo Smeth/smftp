@@ -18,6 +18,37 @@ def size_label(size: int) -> str:
         value /= 1024
 
 
+def breadcrumb_parts(path: str, remote: bool) -> list[tuple[str, str]]:
+    """(label, absolute target) pairs. Windows roots keep their separator: "C:\\"."""
+    if remote:
+        parts = [p for p in path.split("/") if p]
+        crumbs = [("/", "/")]
+        for i in range(len(parts)):
+            crumbs.append((parts[i], "/" + "/".join(parts[:i + 1])))
+        return crumbs
+    normalized = path.replace("/", "\\")
+    if normalized.startswith("\\\\"):
+        # UNC path: \\server\share is the root.
+        pieces = [p for p in normalized[2:].split("\\") if p]
+        if len(pieces) < 2:
+            return [(normalized, normalized)]
+        root = "\\\\" + "\\".join(pieces[:2]) + "\\"
+        rest = pieces[2:]
+    elif len(normalized) >= 2 and normalized[1] == ":":
+        root = normalized[:2] + "\\"
+        rest = [p for p in normalized[2:].split("\\") if p]
+    else:
+        # POSIX local path (Linux / macOS).
+        root = "/"
+        rest = [p for p in path.split("/") if p]
+    crumbs = [(root, root)]
+    current = root
+    for piece in rest:
+        current = current + piece if current.endswith(("\\", "/")) else current + ("/" if root == "/" else "\\") + piece
+        crumbs.append((piece, current))
+    return crumbs
+
+
 class EntryItem(QTreeWidgetItem):
     def __lt__(self, other):
         column = self.treeWidget().sortColumn()
@@ -127,6 +158,7 @@ class Explorer(QWidget):
             self.model = LocalModel(self)
             self.model.setRootPath(self.path)
             self.model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
+            self.model.directoryLoaded.connect(lambda _: self.select_pending())
             self.view = LocalView()
             self.view.setModel(self.model)
             self.view.setRootIndex(self.model.index(self.path))
@@ -181,6 +213,36 @@ class Explorer(QWidget):
         if not remote:
             self.commit(self.path)
 
+    def reveal(self, folder: str, name: str) -> None:
+        """Open a folder and select one of its entries (used by search results)."""
+        self.pending_select = (posixpath.normpath(folder) if self.remote else str(Path(folder).resolve()), name)
+        self.navigate(folder)
+        if not self.remote:
+            self.select_pending()
+
+    def select_pending(self) -> None:
+        pending = getattr(self, "pending_select", None)
+        if not pending:
+            return
+        folder, name = pending
+        current = posixpath.normpath(self.path) if self.remote else str(Path(self.path).resolve())
+        if current != folder:
+            return  # Another folder is shown (navigation failed or still loading).
+        if self.remote:
+            for i in range(self.view.topLevelItemCount()):
+                item = self.view.topLevelItem(i)
+                item.setSelected(item.text(0) == name)
+                if item.text(0) == name:
+                    self.view.setCurrentItem(item)
+                    self.view.scrollToItem(item)
+        else:
+            index = self.model.index(str(Path(self.path) / name))
+            if not index.isValid():
+                return  # Retried when the folder finishes loading.
+            self.view.setCurrentIndex(index)
+            self.view.scrollTo(index)
+        self.pending_select = None
+
     def navigate(self, path: str) -> None:
         if self.remote:
             self.requested.emit(posixpath.normpath(path))
@@ -201,13 +263,11 @@ class Explorer(QWidget):
             item = self.crumbs.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        parts = path.replace("\\", "/").split("/")
-        for i, part in enumerate(parts):
-            if not part and i > 0:
-                continue
-            target = "/".join(parts[:i + 1]) or "/"
-            button = QPushButton(part or "/")
+        for label, target in breadcrumb_parts(path, self.remote):
+            button = QPushButton(label)
             button.setObjectName("breadcrumb")
+            button.setToolTip(target)
+            button.setAccessibleName(self.tr("Aller à %s") % target)
             button.clicked.connect(lambda checked=False, p=target: self.navigate(p))
             self.crumbs.addWidget(button)
         self.crumbs.addStretch()
@@ -283,6 +343,7 @@ class Explorer(QWidget):
         self.view.setSortingEnabled(True)
         self.count.setText(self.tr("%n élément(s)", "", len(entries)))
         self.filter_entries(self.search.text())
+        self.select_pending()
 
     def set_icon_mode(self, enabled):
         self.stack.setCurrentWidget(self.icons if enabled else self.view)

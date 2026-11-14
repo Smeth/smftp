@@ -33,24 +33,32 @@ def parse_mode(text):
 
 
 class PermissionsDialog(QDialog):
-    def __init__(self, parent=None, mode=None):
+    def __init__(self, parent=None, mode=None, directory=False, name=""):
         super().__init__(parent)
-        self.setWindowTitle(self.tr("Permissions du fichier"))
+        title = self.tr("Permissions du dossier") if directory else self.tr("Permissions du fichier")
+        self.setWindowTitle(f"{title} — {name}" if name else title)
+        self.setMinimumWidth(380)
         # Special bits (setuid, setgid, sticky) are not editable here but are preserved.
         self.special = (mode or 0) & 0o7000
         grid = QGridLayout(self)
         self.boxes = []
         for col, title in enumerate(["Lire", "Écrire", "Exécuter"], 1):
             grid.addWidget(QLabel(self.tr(title)), 0, col)
+        grid.setColumnMinimumWidth(0, 110)
+        rights = ["Lire", "Écrire", "Traverser" if directory else "Exécuter"]
+        if directory:
+            grid.itemAtPosition(0, 3).widget().setText(self.tr("Traverser"))
         for row, title in enumerate(["Propriétaire", "Groupe", "Autres"], 1):
             grid.addWidget(QLabel(self.tr(title)), row, 0)
             for col in range(1, 4):
                 box = QCheckBox()
+                box.setAccessibleName(f"{self.tr(title)} — {self.tr(rights[col - 1])}")
                 grid.addWidget(box, row, col)
                 self.boxes.append(box)
                 box.toggled.connect(self.update_octal)
         self.octal = QLineEdit()
         self.octal.setMaxLength(3)
+        self.octal.setAccessibleName(self.tr("Permissions en octal"))
         grid.addWidget(QLabel(self.tr("Octal")), 4, 0)
         grid.addWidget(self.octal, 4, 1, 1, 3)
         self.octal.textEdited.connect(self.update_boxes)
