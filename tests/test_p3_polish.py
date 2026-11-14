@@ -154,6 +154,6 @@ def test_diagnostic_and_about_dialogs_open(monkeypatch):
         window.show_diagnostic()
         window.show_about()
         assert texts[0] == "Diagnostic"
-        assert "github.com/Smeth/smftp" in texts[1] and "Licence" in texts[1]
+        assert "github.com/Smeth/smftp" in texts[1] and "PolyForm Noncommercial 1.0.0" in texts[1]
     finally:
         close_window(window)

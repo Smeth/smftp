@@ -92,12 +92,16 @@ Les tests démarrent des serveurs FTP et SSH/SFTP exclusivement sur `127.0.0.1`,
 ## Exécutable Windows
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\build.ps1
-# Équivalent :
-.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --windowed --onedir --name SMFTP --add-data "resources;resources" --collect-submodules keyring.backends main.py
+powershell -ExecutionPolicy Bypass -File .uild.ps1
 ```
 
-Résultat : `dist/SMFTP/SMFTP.exe`. Distribuer **tout le dossier**. Pour un seul fichier, remplacer `--onedir` par `--onefile`. Compiler séparément sur chaque OS ; sous Linux / macOS, le séparateur de `--add-data` est `:`.
+Résultat : `dist/SMFTP/SMFTP.exe`, avec les licences dans `dist/SMFTP/licenses`. Distribuer **tout le dossier**. Le mode `--onedir` est volontaire : Qt, PySide6 et paramiko (LGPL) restent des fichiers séparés et remplaçables. Ne pas le remplacer par `--onefile` pour une distribution publique. Compiler séparément sur chaque OS ; sous Linux / macOS, le séparateur de `--add-data` est `:`.
+
+## Licence
+
+SMFTP est distribué sous la **[PolyForm Noncommercial License 1.0.0](LICENSE.md)** : chacun peut utiliser, étudier, modifier et redistribuer le code pour tout usage **non commercial** (usage personnel, apprentissage, recherche, associations, établissements d’enseignement, organismes publics…). **L’usage commercial nécessite une autorisation** : ouvrez une *issue* sur le dépôt pour en faire la demande.
+
+Ce n’est pas une licence « open source » au sens de l’OSI, car l’usage commercial est restreint ; le code reste public et ouvert aux contributions. Voir [CONTRIBUTING.md](CONTRIBUTING.md) pour contribuer, et [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) pour les composants tiers, qui gardent leur propre licence.
 
 ## Limites et suites prévues
 

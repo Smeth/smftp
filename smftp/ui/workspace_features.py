@@ -455,8 +455,11 @@ class WorkspaceFeatures:
         box.setTextFormat(Qt.TextFormat.RichText)
         box.setText(self.tr("<b>SMFTP %s</b><br>Client FTP, FTPS et SFTP pour le bureau.<br><br>"
                             "Code source : <a href=\"https://github.com/Smeth/smftp\">github.com/Smeth/smftp</a><br>"
-                            "Licence : aucune licence n’a encore été choisie pour ce projet.<br>"
-                            "Composants : Qt / PySide6 (LGPL), Paramiko (LGPL), keyring (MIT).") % CURRENT_VERSION)
+                            "Licence : <a href=\"https://polyformproject.org/licenses/noncommercial/1.0.0\">PolyForm Noncommercial 1.0.0</a> — "
+                            "usage non commercial libre ; usage commercial sur autorisation.<br>"
+                            "Copyright © 2026 Smeth.<br><br>"
+                            "Composants tiers sous leur propre licence : Qt / PySide6 (LGPL v3), Paramiko (LGPL v2.1), keyring (MIT)… "
+                            "Voir le dossier « licenses » de l’application.") % CURRENT_VERSION)
         box.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         box.exec()
 
