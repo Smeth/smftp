@@ -416,8 +416,12 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                         self.operation_requested.emit("rename", [source, destination])
                 else:
                     # Native local moves are handled separately from network I/O.
-                    from smftp.workers.local import LocalOperation
-                    self.start_local("move", [source, str(Path(target) / Path(source).name)])
+                    destination = str(Path(target) / Path(source).name)
+                    if Path(source) == Path(destination):
+                        continue
+                    resolved = self.local_destination(source, destination)
+                    if resolved:
+                        self.start_local("move", [source, *resolved])
             return
         if not self.online:
             self.on_error(self.tr("Connectez un serveur avant de transférer des fichiers."))
@@ -514,6 +518,32 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         else:
             self.start_local(operation, arguments)
 
+    def local_destination(self, source, destination):
+        """Same conflict choices as transfers. Returns [destination, overwrite] or None."""
+        from smftp.utils.paths import unique_copy_name
+        target = Path(destination)
+        if not (target.exists() or target.is_symlink()):
+            return [destination, False]
+        box = QMessageBox(self)
+        box.setWindowTitle(self.tr("Fichier existant"))
+        box.setText(self.tr("%s existe déjà. Quelle action souhaitez-vous ?") % target.name)
+        replace = None
+        if Path(source).is_file() and target.is_file():
+            replace = box.addButton(self.tr("Écraser"), QMessageBox.ButtonRole.DestructiveRole)
+        else:
+            box.setInformativeText(self.tr("Les dossiers ne sont jamais fusionnés ni remplacés."))
+        rename = box.addButton(self.tr("Renommer"), QMessageBox.ButtonRole.ActionRole)
+        skip = box.addButton(self.tr("Ignorer"), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(skip)
+        box.exec()
+        clicked = box.clickedButton()
+        if replace is not None and clicked is replace:
+            return [destination, True]
+        if clicked is rename:
+            return [str(unique_copy_name(target, lambda p: p.exists() or p.is_symlink())), False]
+        self.log(self.tr("Ignoré : %s existe déjà.") % destination)
+        return None
+
     def start_local(self, operation, arguments):
         from smftp.workers.local import LocalOperation
         if not hasattr(self, "local_workers"):
@@ -551,24 +581,13 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
             imported = merge_profiles([], result.profiles)
-            if import_passwords:
-                from smftp.models.entries import Connection
-                for site in imported:
-                    secret = result.passwords.get(identity(site))
-                    if secret is None:
-                        continue
-                    try:
-                        connection = Connection(**site)
-                        connection.password = secret
-                        connection.remember = True
-                        store_credential(connection)
-                        site["remember"] = True
-                    except Exception:
-                        result.warnings.append(f"{site['name']} : coffre-fort indisponible ; mot de passe non importé.")
+            # Profiles first: if they cannot be written, no secret reaches the vault.
             updated = merge_profiles(self.sites, imported)
             save_sites(updated)
             self.sites = updated
             self.refresh_sites()
+            if import_passwords:
+                self.import_secrets(imported, updated, result)
             message = self.tr("%n profil(s) importé(s) ou mis à jour. Les doublons ont été fusionnés.", "", len(imported))
             self.log(message)
             box = QMessageBox(self)
@@ -581,6 +600,46 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             box.exec()
         except Exception as error:
             self.on_error(describe_error(error, operation="Import de configuration"))
+
+    def import_secrets(self, imported, updated, result):
+        """Store imported secrets, then mark profiles; undo the vault on failure."""
+        from smftp.models.entries import Connection
+        from smftp.utils.profiles import read_credential, restore_credential
+        flags = {identity(item): item.get("remember", False) for item in updated}
+        stored = []  # (identity, previous vault value)
+        for site in imported:
+            key = identity(site)
+            secret = result.passwords.get(key)
+            if secret is None:
+                continue
+            try:
+                previous = read_credential(key)
+                connection = Connection(**site)
+                connection.password = secret
+                connection.remember = True
+                store_credential(connection)
+                stored.append((key, previous))
+            except Exception:
+                result.warnings.append(f"{site['name']} : coffre-fort indisponible ; mot de passe non importé.")
+        if not stored:
+            return
+        keys = {key for key, _ in stored}
+        for item in updated:
+            if identity(item) in keys:
+                item["remember"] = True
+        try:
+            save_sites(updated)
+        except (OSError, ValueError, TypeError):
+            # The profiles would not reference these secrets: remove them again.
+            for key, previous in stored:
+                try:
+                    restore_credential(key, previous)
+                except Exception:
+                    result.warnings.append(f"{key} : mot de passe importé resté dans le coffre-fort ; supprimez-le depuis le gestionnaire d’identifiants.")
+            for item in updated:
+                item["remember"] = flags.get(identity(item), False)
+            result.warnings.append("Profils importés, mais leur mise à jour finale a échoué : les mots de passe importés ont été retirés du coffre-fort.")
+        self.refresh_sites()
 
     def export_sites(self):
         import json
@@ -617,6 +676,10 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         import posixpath
         from PySide6.QtWidgets import QDialog, QTreeWidget, QTreeWidgetItem, QDialogButtonBox
         from smftp.ui.explorer import size_label
+        if not plan:
+            self.log(self.tr("Synchronisation : aucun fichier nouveau ou différent."))
+            QMessageBox.information(self, self.tr("Synchroniser"), self.tr("Les dossiers sont déjà synchronisés dans ce sens : aucun fichier nouveau ou différent (taille et date comparées)."))
+            return
         dialog = QDialog(self)
         dialog.setWindowTitle(self.tr("Aperçu de synchronisation — aucune suppression"))
         dialog.resize(760, 480)
@@ -625,18 +688,42 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         table = QTreeWidget()
         table.setHeaderLabels([self.tr("Fichier"), self.tr("Action"), self.tr("Taille")])
         table.setColumnWidth(0, 450)
-        for path, state, size in plan:
+        for path, state, size, _ in plan:
             item = QTreeWidgetItem([path, self.tr(state), size_label(size)])
             item.setCheckState(0, Qt.CheckState.Checked)
             table.addTopLevelItem(item)
         layout.addWidget(table)
+        summary = QLabel()
+        layout.addWidget(summary)
+        from PySide6.QtWidgets import QCheckBox
+        all_box = QCheckBox(self.tr("Tout sélectionner"))
+        all_box.setChecked(True)
+        layout.addWidget(all_box)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(self.tr("Copier la sélection"))
+        copy_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        copy_button.setText(self.tr("Copier la sélection"))
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
+
+        def checked_rows():
+            return [i for i in range(table.topLevelItemCount()) if table.topLevelItem(i).checkState(0) == Qt.CheckState.Checked]
+
+        def update_summary(*_):
+            rows = checked_rows()
+            summary.setText(self.tr("%n fichier(s) sélectionné(s)", "", len(rows)) + f" • {size_label(sum(plan[i][2] for i in rows))}")
+            copy_button.setEnabled(bool(rows))
+
+        def toggle_all(checked):
+            state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+            for i in range(table.topLevelItemCount()):
+                table.topLevelItem(i).setCheckState(0, state)
+
+        table.itemChanged.connect(update_summary)
+        all_box.toggled.connect(toggle_all)
+        update_summary()
         if dialog.exec():
-            for i, (path, _, _) in enumerate(plan):
+            for i, (path, _, _, expected) in enumerate(plan):
                 if table.topLevelItem(i).checkState(0) == Qt.CheckState.Checked:
                     from smftp.utils.paths import local_child
                     destination = Path(local)
@@ -646,7 +733,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                     except ValueError as error:
                         self.on_error(str(error))
                         return
-                    self.transfers.add(Transfer(connection, str(destination), posixpath.join(remote, path), upload, conflict="ask"))
+                    self.transfers.add(Transfer(connection, str(destination), posixpath.join(remote, path), upload,
+                                                conflict="ask", planned=True, expected=expected))
 
     def edit_remote(self, external=False):
         import tempfile

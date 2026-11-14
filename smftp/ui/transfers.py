@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, Q
                                QTreeWidgetItem, QProgressBar, QTabWidget, QMessageBox,
                                QSpinBox, QLabel)
 from PySide6.QtCore import Signal
-from smftp.workers.transfer import TransferWorker
+from smftp.workers.transfer import TransferWorker, RateLimiter
 from smftp.ui.explorer import size_label
 
 
@@ -23,6 +23,7 @@ class Transfers(QWidget):
         self.limit = 2
         self.stopping = False
         self.paused = False
+        self.limiter = RateLimiter()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
         bar = QHBoxLayout()
@@ -37,10 +38,12 @@ class Transfers(QWidget):
         self.concurrency.setValue(2)
         self.concurrency.valueChanged.connect(self.set_limit)
         bar.addWidget(self.concurrency)
-        bar.addWidget(QLabel(self.tr("Limite Ko/s")))
+        bar.addWidget(QLabel(self.tr("Limite totale Ko/s")))
         self.speed = QSpinBox()
         self.speed.setRange(0, 1_000_000)
         self.speed.setSpecialValueText(self.tr("Illimitée"))
+        self.speed.setToolTip(self.tr("Débit partagé par tous les transferts de la file. 0 = illimité."))
+        self.speed.valueChanged.connect(lambda value: self.limiter.set_rate(value * 1024))
         bar.addWidget(self.speed)
         layout.addLayout(bar)
         self.tabs = QTabWidget()
@@ -72,6 +75,7 @@ class Transfers(QWidget):
         progress.setRange(0, 100)
         self.tables[0].setItemWidget(item, 2, progress)
         worker = TransferWorker(task, self)
+        worker.limiter = self.limiter
         record = {"task": task, "item": item, "bar": progress, "worker": worker,
                   "state": "paused_pending" if restored else "pending", "speed": 0,
                   "restored": restored, "transient": transient}
@@ -181,7 +185,6 @@ class Transfers(QWidget):
             if record["state"] == "pending" and not record["restored"]:
                 record["state"] = "active"
                 record["item"].setText(5, "En cours")
-                record["worker"].speed_limit = self.speed.value() * 1024
                 record["worker"].start()
                 active += 1
 

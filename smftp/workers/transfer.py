@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import os
 import posixpath
-from threading import Event
+from threading import Event, Lock
 import time
 import hashlib
 from PySide6.QtCore import QThread, Signal
@@ -22,10 +22,39 @@ class Transfer:
     resume: bool = False
     conflict: str = "ask"
     safe_upload: bool = True
+    # Synchronization: destination metadata seen when the plan was built. A
+    # destination that still matches is overwritten; any other one is asked.
+    planned: bool = False
+    expected: tuple | None = None
 
 
 def valid_remote_name(name: str) -> bool:
     return name not in (".", "..") and not any(c in name for c in "/\\:")
+
+
+class RateLimiter:
+    """Bandwidth shared by every transfer of the queue (0 = unlimited)."""
+
+    def __init__(self, rate: float = 0):
+        self.lock = Lock()
+        self.rate = rate
+        self.next_free = 0.0
+
+    def set_rate(self, rate: float) -> None:
+        with self.lock:
+            self.rate = max(0, rate)
+            self.next_free = 0.0
+
+    def reserve(self, amount: int) -> float:
+        """Account for bytes already moved; return how long the caller must wait."""
+        with self.lock:
+            if self.rate <= 0 or amount <= 0:
+                return 0.0
+            now = time.monotonic()
+            # Unused time is not banked beyond a short burst.
+            start = max(self.next_free, now - 0.25)
+            self.next_free = start + amount / self.rate
+            return max(0.0, self.next_free - now)
 
 
 class Cancelled(Exception):
@@ -47,7 +76,9 @@ class TransferWorker(QThread):
         self.running.set()
         self.answer = Event()
         self.choice = "skip"
-        self.speed_limit = 0
+        self.speed_limit = 0  # Per-transfer limit, kept for compatibility.
+        self.limiter = None  # Shared RateLimiter of the queue.
+        self.previous_done = None
         self.started_at = 0
         self.last_update = 0
         self.initial_offset = 0
@@ -77,7 +108,17 @@ class TransferWorker(QThread):
         self.checkpoint()
         elapsed = max(time.monotonic() - self.started_at, 0.001)
         transferred = max(0, done - self.initial_offset)
-        if self.speed_limit:
+        if self.limiter is not None:
+            previous = self.initial_offset if self.previous_done is None else self.previous_done
+            self.previous_done = done
+            delay = self.limiter.reserve(done - previous)
+            deadline = time.monotonic() + delay
+            while delay > 0:
+                if self.cancelled.wait(min(delay, 0.1)):
+                    raise Cancelled
+                self.checkpoint()
+                delay = deadline - time.monotonic()
+        elif self.speed_limit:
             delay = transferred / self.speed_limit - elapsed
             while delay > 0:
                 if self.cancelled.wait(min(delay, 0.1)):
@@ -163,6 +204,12 @@ class TransferWorker(QThread):
         if self.total_bytes is not None:
             self.done_bytes += size
 
+    def matches_plan(self, existing) -> bool:
+        size, modified = self.task.expected
+        if self.task.upload:
+            return (existing.size, existing.modified) == (size, modified)
+        return existing.st_size == size and abs(existing.st_mtime - modified) < 0.001
+
     def copy_file(self, client, local: Path, remote: str) -> int:
         """Copy one file and return its source size, also counted when skipped."""
         if self.task.upload:
@@ -178,7 +225,13 @@ class TransferWorker(QThread):
         offset = 0
         resume = bool(self.task.resume)
         if existing:
-            choice = ("overwrite" if self.task.upload and self.task.safe_upload else "resume") if self.task.resume else self.conflict(str(local.name))
+            if self.task.planned and self.task.expected is not None and self.matches_plan(existing):
+                choice = "overwrite"
+            elif self.task.planned:
+                # Created or changed since the comparison: never overwrite silently.
+                choice = self.conflict(str(local.name)) if self.task.conflict == "ask" else self.task.conflict
+            else:
+                choice = ("overwrite" if self.task.upload and self.task.safe_upload else "resume") if self.task.resume else self.conflict(str(local.name))
             if choice == "skip":
                 return source_size
             if choice in ("newer", "different"):
@@ -202,6 +255,7 @@ class TransferWorker(QThread):
                     local = local.with_name(f"{local.stem}.copie-{stamp}{local.suffix}")
         self.started_at = time.monotonic()
         self.initial_offset = offset
+        self.previous_done = None
         if self.task.upload:
             if self.task.safe_upload:
                 info = local.stat()

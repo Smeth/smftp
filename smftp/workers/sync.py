@@ -45,7 +45,8 @@ class SyncPlanner(QThread):
             for path, metadata in source.items():
                 other = destination.get(path)
                 if other is None or metadata[0] != other[0] or metadata[1] > other[1] + 2:
-                    plan.append((path, "Nouveau" if other is None else "Modifié", metadata[0]))
+                    # The destination metadata lets the copy detect later changes.
+                    plan.append((path, "Nouveau" if other is None else "Modifié", metadata[0], other))
             self.planned.emit(plan)
         except Exception:
             self.failed.emit("Impossible de comparer les dossiers. Vérifiez la connexion et les droits d’accès.")

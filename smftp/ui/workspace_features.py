@@ -232,9 +232,8 @@ class WorkspaceFeatures:
             self.transfers.cancel_all()
 
     def update_speed_limit(self, value):
+        # The queue's shared limiter applies the value; only persist it here.
         self.settings.setValue("speed_limit", value)
-        for record in self.transfers.records:
-            record["worker"].speed_limit = value * 1024
 
     def copy_files(self, cut=False):
         from PySide6.QtWidgets import QLineEdit, QPlainTextEdit
@@ -286,17 +285,28 @@ class WorkspaceFeatures:
         if remote_source != panel.remote:
             self.handle_drop([dict(path=p, directory=d) for p, d in selected], panel.path, remote_source, panel.remote)
             return
+        from smftp.utils.paths import unique_copy_name
+        remote_names = {entry.name for entry in getattr(panel, "last_entries", [])}
         for source, directory in selected:
             name = posixpath.basename(source) if remote_source else Path(source).name
             destination = posixpath.join(panel.path, name) if remote_source else str(Path(panel.path) / name)
-            if source == destination:
+            same = posixpath.normpath(source) == posixpath.normpath(destination) if remote_source else Path(source) == Path(destination)
+            if same:
                 if cut:
                     continue
-                destination += ".copie"
+                # Duplicate in place: "nom (copie).ext", then "nom (copie 2).ext"...
+                if remote_source:
+                    copy_name = unique_copy_name(Path(name), lambda p: p.name in remote_names, directory).name
+                    remote_names.add(copy_name)
+                    destination = posixpath.join(panel.path, copy_name)
+                else:
+                    destination = str(unique_copy_name(Path(destination), lambda p: p.exists() or p.is_symlink()))
             if remote_source and cut:
                 self.operation_requested.emit("rename", [source, destination])
             elif not remote_source:
-                self.start_local("move" if cut else "copy", [source, destination])
+                resolved = self.local_destination(source, destination)
+                if resolved:
+                    self.start_local("move" if cut else "copy", [source, *resolved])
             else:
                 temporary = tempfile.TemporaryDirectory(prefix="smftp-copy-")
                 self.temp_dirs.append(temporary)

@@ -46,6 +46,45 @@ def merge_profiles(existing: list[dict], imported: list[dict]) -> list[dict]:
     return list(result.values())
 
 
+def read_credential(key: str):
+    import keyring
+    return keyring.get_password("SMFTP", key)
+
+
+def restore_credential(key: str, previous) -> None:
+    """Put back the vault value seen before an import (None = no secret)."""
+    import keyring
+    if previous is None:
+        if keyring.get_password("SMFTP", key) is not None:
+            keyring.delete_password("SMFTP", key)
+    else:
+        keyring.set_password("SMFTP", key, previous)
+
+
+def ignored_filezilla_options(server) -> list[str]:
+    """FileZilla settings that SMFTP profiles do not carry over."""
+    ignored = []
+    if (server.findtext("PasvMode") or "").strip() == "MODE_ACTIVE":
+        ignored.append("mode FTP actif (SMFTP utilise le mode passif)")
+    offset = (server.findtext("TimezoneOffset") or "0").strip()
+    if offset not in ("", "0"):
+        ignored.append(f"décalage horaire de {offset} min")
+    encoding = (server.findtext("EncodingType") or "Auto").strip()
+    if encoding not in ("", "Auto", "UTF-8"):
+        custom = (server.findtext("CustomEncoding") or "").strip()
+        ignored.append("encodage " + (custom or encoding))
+    connections = (server.findtext("MaximumMultipleConnections") or "0").strip()
+    if connections not in ("", "0"):
+        ignored.append(f"limite de {connections} connexion(s)")
+    if (server.findtext("BypassProxy") or "0").strip() == "1":
+        ignored.append("contournement du proxy")
+    if (server.findtext("Logontype") or "").strip() in ("3", "4"):
+        ignored.append("authentification interactive ou par compte (saisie demandée à la connexion)")
+    if (server.findtext("Account") or "").strip():
+        ignored.append("compte FTP (ACCT)")
+    return ignored
+
+
 def store_credential(connection: Connection) -> None:
     import keyring
     if connection.remember:
@@ -172,6 +211,9 @@ def read_profiles(filename: str, *, repair_header: bool = False) -> ImportResult
             result.warnings.append(f"{label} : hôte, utilisateur ou port invalide ; profil ignoré.")
             continue
         result.profiles.append(site)
+        ignored = ignored_filezilla_options(server)
+        if ignored:
+            result.warnings.append(f"{label} : options FileZilla non reprises : " + ", ".join(ignored) + ".")
         password = server.find("Pass")
         if password is not None and password.text:
             encoding = password.get("encoding", "plain")
