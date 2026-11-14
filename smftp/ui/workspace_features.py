@@ -62,7 +62,8 @@ class WorkspaceFeatures:
             ("Télécharger la sélection", lambda: self.file_action("transfer", self.remote)),
             ("Mettre tout en pause", self.transfers.pause_all), ("Reprendre tout", self.transfers.resume_all),
             ("Annuler tous les transferts…", self.cancel_transfers),
-            ("Relancer la sélection", self.transfers.retry), ("Effacer les tâches terminées", self.transfers.clear_finished),
+            ("Relancer la sélection", self.transfers.retry), ("Effacer les tâches réussies", self.transfers.clear_finished),
+            ("Effacer les tâches échouées…", self.transfers.clear_failed),
             ("Limites et conflits…", self.preferences)]:
             self.add_command(transfers, title, callback)
         display = self.display_menu

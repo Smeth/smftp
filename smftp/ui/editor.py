@@ -40,7 +40,10 @@ class Editor(QDialog):
         self.text.setFont(QFont("Consolas", 11))
         self.text.setPlainText(self.path.read_text(encoding="utf-8"))
         self.highlighter = CodeHighlighter(self.text.document())
-        self.text.textChanged.connect(self.mark_dirty)
+        # Only real content edits change the document's modification flag;
+        # formatting applied by the highlighter does not.
+        self.text.document().setModified(False)
+        self.text.document().modificationChanged.connect(self.mark_dirty)
         layout.addWidget(self.text)
         row = QHBoxLayout()
         row.addStretch()
@@ -51,22 +54,38 @@ class Editor(QDialog):
         row.addWidget(self.save_button)
         layout.addLayout(row)
 
-    def mark_dirty(self):
-        self.dirty = True
+    def mark_dirty(self, modified=True):
+        self.dirty = bool(modified)
 
     def save(self):
         try:
             self.path.write_text(self.text.toPlainText(), encoding="utf-8")
+            self.text.document().setModified(False)
             self.dirty = False
             self.saved.emit()
         except OSError:
             QMessageBox.warning(self, self.tr("Enregistrement"), self.tr("Impossible d’enregistrer la copie locale."))
 
+    def confirm_discard(self):
+        """Single guard for every closing path: X button, Escape, parent close, reject()."""
+        if not self.dirty:
+            return True
+        answer = QMessageBox.question(self, self.tr("Modifications non enregistrées"), self.tr("Fermer et abandonner les modifications ?"), QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        self.dirty = False  # Discarded edits are no longer pending for the main window.
+        return True
+
+    def reject(self):
+        # QDialog maps Escape to reject(), which would otherwise bypass closeEvent.
+        if self.confirm_discard():
+            super().reject()
+
     def closeEvent(self, event):
-        if self.dirty and QMessageBox.question(self, self.tr("Modifications non enregistrées"), self.tr("Fermer et abandonner les modifications ?"), QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
-            event.ignore()
-        else:
+        if self.confirm_discard():
             event.accept()
+        else:
+            event.ignore()
 
 
 class ImagePreview(QDialog):

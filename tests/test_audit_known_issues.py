@@ -1,7 +1,6 @@
-"""Executable audit findings, deliberately xfailed until the defects are fixed.
+"""Regression tests for the audit findings AUD-001 to AUD-008 (docs/AUDIT_2026-11-09.md).
 
-Assertions describe the required behavior, not the currently faulty behavior.
-strict=True makes a future correction visible as XPASS until this file is updated.
+These reproductions were xfailed until the defects were fixed; they now guard the corrections.
 """
 from pathlib import Path
 import pytest
@@ -24,7 +23,7 @@ def close_window(window):
     loop.exec()
 
 
-@pytest.mark.xfail(strict=True, reason="AUD-001: QDialog.reject bypasses Editor.closeEvent")
+# AUD-001 — corrigé.
 def test_editor_escape_must_keep_unsaved_document_visible(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     path = tmp_path / "document.txt"
@@ -33,7 +32,9 @@ def test_editor_escape_must_keep_unsaved_document_visible(tmp_path, monkeypatch)
     monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.No)
     try:
         editor.show()
-        editor.text.setPlainText("unsaved change")
+        # A user edit (setPlainText is a programmatic reset that Qt marks unmodified).
+        editor.text.insertPlainText("unsaved change")
+        assert editor.dirty
         editor.reject()  # QDialog's Escape action.
         assert editor.isVisible()
     finally:
@@ -41,7 +42,7 @@ def test_editor_escape_must_keep_unsaved_document_visible(tmp_path, monkeypatch)
         editor.close()
 
 
-@pytest.mark.xfail(strict=True, reason="AUD-002: syntax highlighting marks an untouched editor dirty")
+# AUD-002 — corrigé.
 def test_highlighting_must_not_mark_document_modified(tmp_path):
     app = QApplication.instance() or QApplication([])
     path = tmp_path / "example.py"
@@ -57,7 +58,7 @@ def test_highlighting_must_not_mark_document_modified(tmp_path):
         editor.close()
 
 
-@pytest.mark.xfail(strict=True, reason="AUD-003: a second save clears the first pending inspection")
+# AUD-003 — corrigé.
 def test_repeated_save_must_preserve_pending_upload(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
@@ -74,7 +75,7 @@ def test_repeated_save_must_preserve_pending_upload(tmp_path, monkeypatch):
         close_window(window)
 
 
-@pytest.mark.xfail(strict=True, reason="AUD-004: download resume accepts stale content of the same size")
+# AUD-004 — corrigé.
 def test_resume_must_not_report_success_with_wrong_download_content(ftp_server, tmp_path):
     port, root = ftp_server
     (root / "remote.bin").write_bytes(b"new-data")
@@ -86,7 +87,7 @@ def test_resume_must_not_report_success_with_wrong_download_content(ftp_server, 
     assert local.read_bytes() == b"new-data"
 
 
-@pytest.mark.xfail(strict=True, reason="AUD-005: clearing finished jobs also erases failed jobs")
+# AUD-005 — corrigé.
 def test_clear_finished_must_retain_failed_jobs(tmp_path):
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
@@ -102,7 +103,7 @@ def test_clear_finished_must_retain_failed_jobs(tmp_path):
         close_window(window)
 
 
-@pytest.mark.xfail(strict=True, reason="AUD-006: directory progress is reset for each child file")
+# AUD-006 — corrigé.
 def test_directory_progress_must_measure_total_bytes(tmp_path):
     folder = tmp_path / "folder"
     folder.mkdir()
@@ -127,7 +128,7 @@ def test_directory_progress_must_measure_total_bytes(tmp_path):
     assert progress[-1] == (8, 8)
 
 
-@pytest.mark.xfail(strict=True, reason="AUD-007: chmod dialog starts at 644 instead of the selected mode")
+# AUD-007 — corrigé.
 def test_permissions_dialog_must_start_with_selected_directory_mode(monkeypatch):
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
@@ -143,7 +144,7 @@ def test_permissions_dialog_must_start_with_selected_directory_mode(monkeypatch)
         close_window(window)
 
 
-@pytest.mark.xfail(strict=True, reason="AUD-008: profile says remembered even when the vault write fails")
+# AUD-008 — corrigé.
 def test_failed_vault_save_must_not_claim_secret_is_remembered(monkeypatch):
     app = QApplication.instance() or QApplication([])
     import smftp.ui.main_window as module
@@ -157,3 +158,37 @@ def test_failed_vault_save_must_not_claim_secret_is_remembered(monkeypatch):
         assert window.sites[0]["remember"] is False
     finally:
         close_window(window)
+
+
+def test_resume_continues_matching_partial_download(ftp_server, tmp_path):
+    port, root = ftp_server
+    (root / "remote.bin").write_bytes(b"0123456789")
+    local = tmp_path / "remote.bin"
+    connection = Connection("127.0.0.1", "test", "FTP", port, "secret")
+    worker = TransferWorker(Transfer(connection, str(local), "/remote.bin", False, resume=True))
+    # Simulate an interrupted download: the partial matches the remote identity.
+    from smftp.core.clients import FTPClient
+    client = FTPClient()
+    client.connect(connection)
+    try:
+        source = client.exists("/remote.bin")
+    finally:
+        client.close()
+    import hashlib
+    digest = hashlib.sha256(f"/remote.bin:{source.size}:{source.modified}".encode()).hexdigest()[:16]
+    partial = tmp_path / f".remote.bin.smftp-{digest}.part"
+    partial.write_bytes(b"01234")
+    worker.run()
+    assert local.read_bytes() == b"0123456789"
+    assert worker.initial_offset == 5
+    assert not partial.exists()
+
+
+def test_permission_listing_formats():
+    from smftp.ui.permissions import parse_mode
+    assert parse_mode("drwxr-xr-x") == 0o755
+    assert parse_mode("-rw-r--r--") == 0o644
+    assert parse_mode("0750") == 0o750
+    assert parse_mode("-rwsr-x--T") == 0o4000 | 0o1000 | 0o750
+    assert parse_mode("elradfmw") is None
+    assert parse_mode("") is None

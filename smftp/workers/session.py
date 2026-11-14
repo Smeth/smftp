@@ -16,6 +16,7 @@ class Session(QObject):
     disconnected = Signal()
     operated = Signal()
     inspected = Signal(str, object)
+    inspect_failed = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -85,6 +86,8 @@ class Session(QObject):
                 raise ConnectionError
             self.inspected.emit(path, self.client.exists(path))
         except Exception as error:
+            # Release only this pending save before the generic diagnostic.
+            self.inspect_failed.emit(path)
             self.report(error)
 
     @Slot(str)

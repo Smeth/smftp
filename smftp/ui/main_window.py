@@ -149,6 +149,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.inspect_requested.connect(self.session.inspect_path)
         self.command_requested.connect(self.session.command)
         self.session.inspected.connect(self.inspected_file)
+        self.session.inspect_failed.connect(self.inspection_failed)
         self.session.connected.connect(self.on_connected)
         self.session.progress.connect(self.log)
         self.session.listed.connect(self.on_listed)
@@ -251,7 +252,17 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                 previous.remember = False
                 store_credential(previous)
         except Exception:
-            self.on_error(self.tr("Le profil est enregistré, mais le coffre-fort système est indisponible. Le secret n’a pas pu être mémorisé ou supprimé. Il n’est jamais écrit dans le fichier JSON."))
+            if connection.remember:
+                # The profile must not claim a remembered secret that the vault never received.
+                for item in self.sites:
+                    if identity(item) == connection.identity:
+                        item["remember"] = False
+                try:
+                    save_sites(self.sites)
+                except (OSError, ValueError, TypeError):
+                    pass
+                self.refresh_sites()
+            self.on_error(self.tr("Le profil est enregistré, mais le coffre-fort système est indisponible. Le secret n’a pas pu être mémorisé ou supprimé : le profil est marqué « secret non mémorisé ». Il n’est jamais écrit dans le fichier JSON."))
         self.log(self.tr("Profil enregistré : %s") % profile["name"])
         return True
 
@@ -343,6 +354,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             self.drag_downloads.pop(id(task), None)
             self.edit_downloads.pop(id(task), None)
             record = self.edit_uploads.pop(id(task), None)
+            if record:
+                record.pop("save_again", None)
             if record and record.get("editor"):
                 record["editor"].message.setText(self.tr("Envoi interrompu. La copie locale est conservée ; réessayez l’enregistrement."))
             self.log(self.tr("Transfert interrompu : %s. Vérifiez la connexion, l’espace disque et les permissions.") % status)
@@ -437,8 +450,16 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                     self.start_local("remove", [path, directory])
             return
         elif operation == "chmod" and len(selected) == 1:
-            from smftp.ui.permissions import PermissionsDialog
-            dialog = PermissionsDialog(self)
+            from smftp.ui.permissions import PermissionsDialog, parse_mode
+            if panel.remote:
+                entry = next((e for e in panel.last_entries if e.name == posixpath.basename(selected[0][0])), None)
+                current = parse_mode(entry.permissions) if entry else None
+            else:
+                try:
+                    current = Path(selected[0][0]).lstat().st_mode & 0o7777
+                except OSError:
+                    current = None
+            dialog = PermissionsDialog(self, current)
             if not dialog.exec():
                 return
             arguments = [selected[0][0], dialog.mode()]
@@ -649,7 +670,9 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             self.on_error(self.tr("Reconnectez le serveur d’origine avant d’envoyer ce fichier."))
             return
         if record["remote"] in self.pending_saves or any(r is record for r in self.edit_uploads.values()):
-            self.on_error(self.tr("Un enregistrement est déjà en cours pour ce fichier."))
+            # Keep the running save intact and send the newest copy once it completes.
+            record["save_again"] = True
+            self.log(self.tr("Un envoi est déjà en cours pour %s : la nouvelle version sera envoyée ensuite.") % record["remote"])
             return
         self.pending_saves[record["remote"]] = record
         self.inspect_requested.emit(record["remote"])
@@ -664,16 +687,29 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             record["unsent"] = False
             if record.get("editor"):
                 record["editor"].message.setText(self.tr("Modifications envoyées au serveur."))
+            if record.pop("save_again", False):
+                self.save_remote(record)
             return
         if baseline != record["baseline"]:
             if QMessageBox.question(self, self.tr("Fichier distant modifié"), self.tr("Le fichier a changé sur le serveur. Écraser cette version ?"), QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                record.pop("save_again", None)
                 return
+        # Any save requested from now on is included in this upload, which reads the file when it starts.
+        record.pop("save_again", None)
         task = Transfer(record["connection"], record["local"], record["remote"], True, conflict="overwrite")
         self.edit_uploads[id(task)] = record
         self.transfers.add(task, transient=True)
 
+    def inspection_failed(self, path):
+        record = self.pending_saves.pop(path, None)
+        if record:
+            record.pop("save_again", None)
+            if record.get("editor"):
+                record["editor"].message.setText(self.tr("Vérification impossible : la copie locale est conservée ; réessayez l’enregistrement."))
+
     def on_disconnected(self):
         self.online = False
+        self.pending_saves.clear()
         self.disconnect_button.setEnabled(False)
         self.remote.view.clear()
         self.remote.icons.clear()
@@ -688,7 +724,6 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         # Full diagnostics arrive in the preceding progress signal.
         self.busy = False
         self.connect_button.setEnabled(True)
-        self.pending_saves.clear()
         self.activity_tabs.setCurrentWidget(self.logs)
         summary = error.summary if isinstance(error, ErrorInfo) else str(error)
         if not isinstance(error, ErrorInfo):
@@ -705,7 +740,6 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
     def on_error(self, message):
         self.busy = False
         self.connect_button.setEnabled(True)
-        self.pending_saves.clear()
         info = message if isinstance(message, ErrorInfo) else ErrorInfo(str(message), "")
         secrets = tuple(filter(None, [self.connection.password if self.connection else "",
                                       getattr(self, "last_secret", "")]))

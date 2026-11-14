@@ -1,6 +1,7 @@
 """Independent transfer connections with cooperative pause and cancellation."""
 from dataclasses import dataclass
 from pathlib import Path
+import os
 import posixpath
 from threading import Event
 import time
@@ -21,6 +22,10 @@ class Transfer:
     resume: bool = False
     conflict: str = "ask"
     safe_upload: bool = True
+
+
+def valid_remote_name(name: str) -> bool:
+    return name not in (".", "..") and not any(c in name for c in "/\\:")
 
 
 class Cancelled(Exception):
@@ -46,6 +51,10 @@ class TransferWorker(QThread):
         self.started_at = 0
         self.last_update = 0
         self.initial_offset = 0
+        self.total_bytes = None  # Set for directory tasks.
+        self.done_bytes = 0
+        self.listings = {}
+        self.remote_entries = {}
 
     def cancel(self):
         self.cancelled.set()
@@ -77,7 +86,10 @@ class TransferWorker(QThread):
                 delay = transferred / self.speed_limit - (time.monotonic() - self.started_at)
         now = time.monotonic()
         if now - self.last_update > 0.12 or done == total:
-            self.updated.emit(done, total, transferred / elapsed)
+            if self.total_bytes is not None:
+                self.updated.emit(self.done_bytes + done, self.total_bytes, transferred / elapsed)
+            else:
+                self.updated.emit(done, total, transferred / elapsed)
             self.last_update = now
 
     def conflict(self, name):
@@ -90,6 +102,32 @@ class TransferWorker(QThread):
         self.checkpoint()
         return self.choice
 
+    def measure(self, client, local: Path, remote: str) -> int:
+        """Total bytes of a directory task; remote listings are cached for the copy."""
+        self.checkpoint()
+        total = 0
+        if self.task.upload:
+            for child in local.iterdir():
+                if child.is_symlink():
+                    continue
+                if child.is_dir():
+                    total += self.measure(client, child, posixpath.join(remote, child.name))
+                else:
+                    total += child.stat().st_size
+            return total
+        entries = client.listdir(remote)
+        self.listings[remote] = entries
+        for entry in entries:
+            if not valid_remote_name(entry.name):
+                continue  # Rejected during the copy itself.
+            path = posixpath.join(remote, entry.name)
+            if entry.is_dir:
+                total += self.measure(client, local / entry.name, path)
+            else:
+                self.remote_entries[path] = entry
+                total += entry.size
+        return total
+
     def copy(self, client, local: Path, remote: str, directory: bool):
         self.checkpoint()
         if local.is_symlink():
@@ -97,9 +135,11 @@ class TransferWorker(QThread):
         if not self.task.upload and any(parent.is_symlink() for parent in local.parents):
             raise ValueError("Destination symlink is not followed")
         if directory:
+            if self.total_bytes is None:
+                # Progress covers the whole task, not only the current file.
+                self.total_bytes = self.measure(client, local, remote)
+                self.done_bytes = 0
             if self.task.upload:
-                if local.is_symlink():
-                    raise ValueError("Symbolic links are not followed")
                 existing = client.exists(remote)
                 if existing and not existing.is_dir:
                     raise FileExistsError
@@ -109,36 +149,49 @@ class TransferWorker(QThread):
                     self.copy(client, child, posixpath.join(remote, child.name), child.is_dir())
             else:
                 local.mkdir(parents=True, exist_ok=True)
-                for entry in client.listdir(remote):
+                entries = self.listings.pop(remote, None)
+                if entries is None:
+                    entries = client.listdir(remote)
+                for entry in entries:
                     # Never allow server-supplied names to escape the destination.
-                    if entry.name in (".", "..") or "/" in entry.name or "\\" in entry.name or ":" in entry.name:
+                    if not valid_remote_name(entry.name):
                         raise ValueError("Invalid remote filename")
                     from smftp.utils.paths import local_child
                     self.copy(client, local_child(local, entry.name), posixpath.join(remote, entry.name), entry.is_dir)
             return
-        if local.is_symlink():
-            raise ValueError("Symbolic links are not followed")
+        size = self.copy_file(client, local, remote)
+        if self.total_bytes is not None:
+            self.done_bytes += size
+
+    def copy_file(self, client, local: Path, remote: str) -> int:
+        """Copy one file and return its source size, also counted when skipped."""
         if self.task.upload:
             client.makedirs(posixpath.dirname(remote))
+            source = None
+            source_size = local.stat().st_size
+        else:
+            source = self.remote_entries.pop(remote, None) or client.exists(remote)
+            if source is None or source.is_dir:
+                raise FileNotFoundError(remote)
+            source_size = source.size
         existing = client.exists(remote) if self.task.upload else (local.stat() if local.exists() else None)
         offset = 0
+        resume = bool(self.task.resume)
         if existing:
             choice = ("overwrite" if self.task.upload and self.task.safe_upload else "resume") if self.task.resume else self.conflict(str(local.name))
             if choice == "skip":
-                return
+                return source_size
             if choice in ("newer", "different"):
-                source = local.stat() if self.task.upload else client.exists(remote)
-                source_size = source.st_size if self.task.upload else source.size
-                source_date = source.st_mtime if self.task.upload else source.modified
+                source_date = local.stat().st_mtime if self.task.upload else source.modified
                 target_size = existing.size if self.task.upload else existing.st_size
                 target_date = existing.modified if self.task.upload else existing.st_mtime
                 if choice == "different" and source_size == target_size:
-                    return
+                    return source_size
                 if choice == "newer" and source_date <= target_date + 2:
-                    return
-            if choice == "resume" and not (self.task.upload and self.task.safe_upload):
-                offset = existing.size if self.task.upload else existing.st_size
-                source_size = local.stat().st_size if self.task.upload else client.exists(remote).size
+                    return source_size
+            resume = choice == "resume"
+            if resume and self.task.upload and not self.task.safe_upload:
+                offset = existing.size
                 if offset > source_size:
                     raise ValueError("Destination exceeds source size")
             if choice == "rename":
@@ -172,8 +225,32 @@ class TransferWorker(QThread):
             else:
                 client.upload(str(local), remote, self.progress, offset)
         else:
-            local.parent.mkdir(parents=True, exist_ok=True)
-            client.download(remote, str(local), self.progress, offset)
+            self.download(client, local, remote, source, resume)
+        return source_size
+
+    def download(self, client, local: Path, remote: str, source, resume: bool):
+        """Download into a hidden partial file tied to the remote size and date.
+
+        An existing destination is never trusted as a partial download: only a
+        partial created for the same remote path, size and date is resumed. The
+        destination is replaced only after a complete download of the right size.
+        """
+        local.parent.mkdir(parents=True, exist_ok=True)
+        stamp = f"{remote}:{source.size}:{source.modified}"
+        digest = hashlib.sha256(stamp.encode()).hexdigest()[:16]
+        temporary = local.with_name(f".{local.name}.smftp-{digest}.part")
+        offset = 0
+        if resume and source.modified and temporary.exists() and not temporary.is_symlink():
+            partial = temporary.stat().st_size
+            if partial <= source.size:
+                offset = partial
+        self.initial_offset = offset
+        client.download(remote, str(temporary), self.progress, offset)
+        self.checkpoint()
+        if temporary.stat().st_size != source.size:
+            temporary.unlink(missing_ok=True)
+            raise RuntimeError("La taille téléchargée ne correspond pas au fichier distant, qui a peut-être changé. Le fichier local d’origine est conservé.")
+        os.replace(temporary, local)
 
     def run(self):
         client = None

@@ -144,9 +144,17 @@ class Transfers(QWidget):
         self.paused = False
 
     def clear_finished(self):
-        self.tables[1].clear()
+        """Remove successful jobs only; failed jobs keep their retry data."""
         self.tables[2].clear()
-        self.records = [r for r in self.records if r["state"] in ("pending", "paused_pending", "active") or r["worker"].isRunning()]
+        self.records = [r for r in self.records if r["state"] != "Terminé" or r["worker"].isRunning()]
+        self.persist()
+
+    def clear_failed(self):
+        """Explicitly discard failed and cancelled jobs, including their retry data."""
+        if QMessageBox.question(self, self.tr("Effacer les échecs"), self.tr("Effacer les tâches échouées ou annulées ? Elles ne pourront plus être relancées."), QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        self.tables[1].clear()
+        self.records = [r for r in self.records if r["state"] not in ("Échoué", "Annulé", "Relancé") or r["worker"].isRunning()]
         self.persist()
 
     def report_failure(self, record, error):
