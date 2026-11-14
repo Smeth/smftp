@@ -133,6 +133,27 @@ class WorkspaceFeatures:
         self.start_connection()
 
     def disconnect_session(self):
+        running = self.transfers.pending_count()
+        if running:
+            from PySide6.QtWidgets import QMessageBox
+            box = QMessageBox(self)
+            box.setWindowTitle(self.tr("Déconnecter"))
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setText(self.tr("%n transfert(s) en cours ou en attente.", "", running))
+            box.setInformativeText(self.tr("Les transferts utilisent leurs propres connexions : déconnecter la navigation ne les arrête pas."))
+            only = box.addButton(self.tr("Déconnecter, transferts continuent"), QMessageBox.ButtonRole.AcceptRole)
+            pause = box.addButton(self.tr("Déconnecter et mettre les transferts en pause"), QMessageBox.ButtonRole.DestructiveRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(only)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is pause:
+                self.transfers.pause_all()
+                self.log(self.tr("Transferts mis en pause. Transferts → Reprendre tout pour continuer."))
+            elif clicked is not only:
+                return
+            else:
+                self.log(self.tr("Navigation déconnectée ; %n transfert(s) continuent.", "", running))
         self.retry_timer.stop()
         self.retry_count = 0
         self.disconnect_requested.emit()

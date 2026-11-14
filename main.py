@@ -18,6 +18,12 @@ def main() -> None:
     if (translator.load("qtbase_fr", local_translations) or
         translator.load("qtbase_fr", QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath))):
         app.installTranslator(translator)
+    from PySide6.QtWidgets import QMessageBox
+    from smftp.utils.storage import acquire_instance_lock
+    lock, available = acquire_instance_lock()
+    if not available:
+        QMessageBox.information(None, "SMFTP", "SMFTP est déjà ouvert.\n\nUtilisez la fenêtre existante : deux instances écraseraient mutuellement les profils et la file de transferts.")
+        sys.exit(0)
     logging_available = configure_logging()
     window = MainWindow()
     if not logging_available:

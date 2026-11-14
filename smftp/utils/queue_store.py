@@ -27,6 +27,20 @@ def write_queue(tasks: list[Transfer]) -> None:
             temporary.unlink()
 
 
+def quarantine_queue() -> Path | None:
+    """Move an unreadable queue aside so a later save cannot overwrite it."""
+    import time
+    path = data_dir() / "queue.json"
+    if not path.exists():
+        return None
+    target = path.with_name(f"queue.illisible-{time.strftime('%Y%m%d-%H%M%S')}.json")
+    try:
+        path.replace(target)
+    except OSError:
+        return None
+    return target
+
+
 def read_queue() -> list[Transfer]:
     path = data_dir() / "queue.json"
     if not path.exists():

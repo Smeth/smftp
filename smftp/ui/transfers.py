@@ -14,6 +14,8 @@ class Transfers(QWidget):
     outcome = Signal(object, str)
     speed_changed = Signal(float)
     diagnostic = Signal(object)
+    retried = Signal(object, object)  # failed task, new task
+    discarded = Signal(object)  # list of tasks removed with their retry data
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -62,7 +64,7 @@ class Transfers(QWidget):
             r["task"].local == task.local and r["task"].remote == task.remote and
             r["task"].upload == task.upload for r in self.records):
             self.activity.emit("Statut : ce transfert est déjà dans la file.")
-            return
+            return None
         from pathlib import Path
         item = QTreeWidgetItem([Path(task.local).name, "↑ Envoi" if task.upload else "↓ Réception", "", "—", "—", "En attente"])
         self.tables[0].addTopLevelItem(item)
@@ -84,6 +86,7 @@ class Transfers(QWidget):
         self.records.append(record)
         self.persist()
         self.schedule()
+        return record
 
     def persist(self):
         if self.stopping:
@@ -106,7 +109,12 @@ class Transfers(QWidget):
             if tasks:
                 self.activity.emit("Statut : file restaurée en pause. Connectez le profil puis choisissez Reprendre tout.")
         except (OSError, ValueError, KeyError, TypeError):
-            self.activity.emit("Erreur : la file sauvegardée est illisible. Aucune tâche n’a été lancée.")
+            from smftp.utils.queue_store import quarantine_queue
+            kept = quarantine_queue()
+            if kept:
+                self.activity.emit(f"Erreur : la file sauvegardée est illisible. Aucune tâche n’a été lancée. Le fichier a été mis de côté sous {kept} pour ne pas être écrasé.")
+            else:
+                self.activity.emit("Erreur : la file sauvegardée est illisible et n’a pas pu être mise de côté. Aucune tâche n’a été lancée.")
 
     def authorize(self, connection):
         for record in self.records:
@@ -154,8 +162,10 @@ class Transfers(QWidget):
         if QMessageBox.question(self, self.tr("Effacer les échecs"), self.tr("Effacer les tâches échouées ou annulées ? Elles ne pourront plus être relancées."), QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
         self.tables[1].clear()
-        self.records = [r for r in self.records if r["state"] not in ("Échoué", "Annulé", "Relancé") or r["worker"].isRunning()]
+        removed = [r for r in self.records if r["state"] in ("Échoué", "Annulé", "Relancé") and not r["worker"].isRunning()]
+        self.records = [r for r in self.records if not any(r is x for x in removed)]
         self.persist()
+        self.discarded.emit([r["task"] for r in removed])
 
     def report_failure(self, record, error):
         record["item"].setToolTip(5, error.summary + "\n" + error.details)
@@ -250,8 +260,11 @@ class Transfers(QWidget):
         for record in self.selected_records():
             if not record["worker"].isRunning() and record["state"] in ("Échoué", "Annulé"):
                 from dataclasses import replace
-                record["state"] = "Relancé"
-                self.add(replace(record["task"], resume=True), transient=record["transient"])
+                task = replace(record["task"], resume=True)
+                if self.add(task, transient=record["transient"]) is not None:
+                    record["state"] = "Relancé"
+                    # Lets the window move follow-up actions (edit, copy, drag) to the new task.
+                    self.retried.emit(record["task"], task)
 
     def stop_all(self):
         self.persist()
@@ -260,6 +273,10 @@ class Transfers(QWidget):
             record["worker"].cancel()
             if record["state"] in ("pending", "paused_pending"):
                 record["state"] = "Annulé"
+
+    def pending_count(self):
+        """Jobs running or waiting; they use their own connections, not the browsing session."""
+        return sum(r["state"] in ("pending", "active") for r in self.records)
 
     def active(self):
         return any(r["worker"].isRunning() for r in self.records)

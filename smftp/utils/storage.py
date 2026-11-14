@@ -14,6 +14,26 @@ def data_dir() -> Path:
     return path
 
 
+def acquire_instance_lock():
+    """Return (lock, True) for the only running instance, (None, False) otherwise.
+
+    Two instances would overwrite each other's profiles and transfer queue. If the
+    data folder is unusable the application still starts; that error is reported
+    by the features that need the folder.
+    """
+    from PySide6.QtCore import QLockFile
+    try:
+        lock = QLockFile(str(data_dir() / "smftp.lock"))
+    except OSError:
+        return None, True
+    lock.setStaleLockTime(0)  # Only a dead owner process makes the lock stale.
+    if lock.tryLock(200):
+        return lock, True
+    if lock.error() == QLockFile.LockError.LockFailedError:
+        return None, False
+    return None, True  # Permission or unknown error: do not block startup.
+
+
 def configure_logging() -> bool:
     try:
         handler = RotatingFileHandler(data_dir() / "smftp.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")

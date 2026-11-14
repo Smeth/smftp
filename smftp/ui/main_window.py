@@ -41,6 +41,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.editors = []
         self.edit_records = {}
         self.pending_saves = {}  # inspection token -> edit record
+        self.parked = {}  # id(failed task) -> (task, follow-up actions) kept for "Relancer"
         self.inspection_counter = 0
         self.temp_dirs = []
         self.watcher = QFileSystemWatcher(self)
@@ -126,6 +127,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.transfers.completed.connect(self.transfer_completed)
         self.transfers.changed.connect(self.refresh)
         self.transfers.outcome.connect(self.transfer_outcome)
+        self.transfers.retried.connect(self.transfer_retried)
+        self.transfers.discarded.connect(self.transfers_discarded)
         self.transfers.diagnostic.connect(lambda error: self.log(error.summary + "\n" + error.details))
         self.transfers.activity.connect(self.log)
         self.transfers.speed_changed.connect(self.update_speed)
@@ -371,15 +374,34 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
 
     def transfer_outcome(self, task, status):
         if status != "Terminé":
-            self.pending_remote_copies.pop(id(task), None)
-            self.drag_downloads.pop(id(task), None)
-            self.edit_downloads.pop(id(task), None)
-            record = self.edit_uploads.pop(id(task), None)
+            # Keep follow-up actions so that "Relancer" completes them too.
+            actions = {}
+            for name in self.CONTINUATIONS:
+                value = getattr(self, name).pop(id(task), None)
+                if value is not None:
+                    actions[name] = value
+            if actions:
+                self.parked[id(task)] = (task, actions)
+            record = actions.get("edit_uploads")
             if record:
                 record.pop("save_again", None)
             if record and record.get("editor"):
-                record["editor"].message.setText(self.tr("Envoi interrompu. La copie locale est conservée ; réessayez l’enregistrement."))
+                record["editor"].message.setText(self.tr("Envoi interrompu. La copie locale est conservée ; relancez le transfert ou enregistrez à nouveau."))
             self.log(self.tr("Transfert interrompu : %s. Vérifiez la connexion, l’espace disque et les permissions.") % status)
+
+    CONTINUATIONS = ("pending_remote_copies", "drag_downloads", "edit_downloads", "edit_uploads")
+
+    def transfer_retried(self, old, new):
+        task, actions = self.parked.pop(id(old), (None, {}))
+        if task is not old:
+            return
+        for name, value in actions.items():
+            getattr(self, name)[id(new)] = value
+
+    def transfers_discarded(self, tasks):
+        for task in tasks:
+            if self.parked.get(id(task), (None,))[0] is task:
+                self.parked.pop(id(task))
 
     def handle_drop(self, paths, target, source_remote, target_remote):
         import posixpath
@@ -690,6 +712,12 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         if not self.online or record["connection"].identity != self.connection.identity:
             self.on_error(self.tr("Reconnectez le serveur d’origine avant d’envoyer ce fichier."))
             return
+        # A new save supersedes a failed upload of the same document.
+        for key, (task, actions) in list(self.parked.items()):
+            if actions.get("edit_uploads") is record:
+                del actions["edit_uploads"]
+                if not actions:
+                    del self.parked[key]
         if any(r is record for r in self.pending_saves.values()) or any(r is record for r in self.edit_uploads.values()):
             # Keep the running save intact and send the newest copy once it completes.
             record["save_again"] = True
@@ -756,7 +784,11 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.remote.external_metadata.clear()
         self.remote.empty.show()
         self.remote.count.setText(self.tr("Non connecté"))
-        self.statusBar().showMessage(self.tr("●  Déconnecté"))
+        running = self.transfers.pending_count()
+        if running:
+            self.statusBar().showMessage(self.tr("●  Déconnecté    •    %n transfert(s) en file sur leurs propres connexions", "", running))
+        else:
+            self.statusBar().showMessage(self.tr("●  Déconnecté"))
 
     def on_session_error(self, error):
         # Full diagnostics arrive in the preceding progress signal.
