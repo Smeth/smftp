@@ -1,7 +1,7 @@
 """Connection editor with optional operating-system credential storage."""
 from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox, QSpinBox,
                                QCheckBox, QDialogButtonBox, QLabel, QWidget, QHBoxLayout, QPushButton, QFileDialog)
-from smftp.models.entries import Connection
+from smftp.models.entries import Connection, PROTOCOL_LABELS, DEFAULT_PORTS
 
 
 class ConnectionDialog(QDialog):
@@ -15,7 +15,8 @@ class ConnectionDialog(QDialog):
         self.name = QLineEdit()
         self.name.setPlaceholderText(self.tr("Ex. Site de production"))
         self.protocol = QComboBox()
-        self.protocol.addItems(["SFTP", "FTPS", "FTP"])
+        for value, label in PROTOCOL_LABELS.items():
+            self.protocol.addItem(label, value)
         self.host = QLineEdit()
         self.host.setPlaceholderText("sftp.exemple.fr")
         self.port = QSpinBox()
@@ -24,6 +25,15 @@ class ConnectionDialog(QDialog):
         self.user = QLineEdit()
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.show_password = QPushButton(self.tr("Afficher"))
+        self.show_password.setCheckable(True)
+        self.show_password.setToolTip(self.tr("Afficher ou masquer le mot de passe saisi ou stocké dans le coffre-fort"))
+        self.show_password.toggled.connect(self.toggle_password)
+        password_row = QWidget()
+        password_layout = QHBoxLayout(password_row)
+        password_layout.setContentsMargins(0, 0, 0, 0)
+        password_layout.addWidget(self.password)
+        password_layout.addWidget(self.show_password)
         self.key = QLineEdit()
         self.key.setPlaceholderText(self.tr("Chemin facultatif d’une clé SSH"))
         self.key_picker = QPushButton(self.tr("Parcourir…"))
@@ -42,7 +52,7 @@ class ConnectionDialog(QDialog):
         self.timeout.setSuffix(self.tr(" s"))
         self.remember = QCheckBox(self.tr("Mémoriser dans le coffre-fort système"))
         for label, widget in [("Nom du profil", self.name), ("Protocole", self.protocol), ("Hôte", self.host), ("Port", self.port),
-                              ("Utilisateur", self.user), ("Mot de passe / phrase secrète", self.password),
+                              ("Utilisateur", self.user), ("Mot de passe / phrase secrète", password_row),
                               ("Clé privée", key_row), ("", self.remember),
                               ("Groupe de serveurs", self.group), ("Dossier local de départ", self.local_directory),
                               ("Dossier distant de départ", self.remote_directory), ("Délai réseau", self.timeout)]:
@@ -76,11 +86,11 @@ class ConnectionDialog(QDialog):
             self.save_button.setEnabled(valid)
         self.host.textChanged.connect(validate)
         self.user.textChanged.connect(validate)
-        self.protocol.currentTextChanged.connect(lambda p: self.port.setValue(22 if p == "SFTP" else 21))
-        self.protocol.currentTextChanged.connect(lambda p: (self.key.setEnabled(p == "SFTP"), self.key_picker.setEnabled(p == "SFTP")))
+        self.protocol.currentIndexChanged.connect(lambda _: self.port.setValue(DEFAULT_PORTS[self.protocol_value()]))
+        self.protocol.currentIndexChanged.connect(lambda _: (self.key.setEnabled(self.protocol_value() == "SFTP"), self.key_picker.setEnabled(self.protocol_value() == "SFTP")))
         if site:
             self.name.setText(site.get("name", site.get("host", "")))
-            self.protocol.setCurrentText(site.get("protocol", "SFTP"))
+            self.set_protocol(site.get("protocol", "SFTP"))
             self.host.setText(site.get("host", ""))
             self.user.setText(site.get("user", ""))
             self.port.setValue(site.get("port", 22))
@@ -97,6 +107,21 @@ class ConnectionDialog(QDialog):
             except Exception:
                 self.warning.setText(self.tr("Le coffre-fort système est indisponible. Saisissez le secret pour cette connexion."))
 
+    def toggle_password(self, visible: bool):
+        self.password.setEchoMode(QLineEdit.EchoMode.Normal if visible else QLineEdit.EchoMode.Password)
+        self.show_password.setText(self.tr("Masquer") if visible else self.tr("Afficher"))
+
+    def done(self, result):
+        self.show_password.setChecked(False)
+        super().done(result)
+
+    def protocol_value(self) -> str:
+        return self.protocol.currentData() or "SFTP"
+
+    def set_protocol(self, protocol: str) -> None:
+        index = self.protocol.findData(protocol)
+        self.protocol.setCurrentIndex(index if index >= 0 else 0)
+
     def accept_save_only(self):
         self.save_only = True
         self.accept()
@@ -108,6 +133,7 @@ class ConnectionDialog(QDialog):
             self.key.setText(filename)
 
     def connection(self) -> Connection:
-        return Connection(self.host.text().strip(), self.user.text().strip(), self.protocol.currentText(),
-                          self.port.value(), self.password.text(), self.key.text().strip() if self.protocol.currentText() == "SFTP" else "", self.remember.isChecked(), self.name.text().strip(),
+        protocol = self.protocol_value()
+        return Connection(self.host.text().strip(), self.user.text().strip(), protocol,
+                          self.port.value(), self.password.text(), self.key.text().strip() if protocol == "SFTP" else "", self.remember.isChecked(), self.name.text().strip(),
                           self.group.text().strip(), self.local_directory.text().strip(), self.remote_directory.text().strip(), self.timeout.value())

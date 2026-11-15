@@ -2,6 +2,15 @@
 from dataclasses import dataclass, field
 
 
+# Stored protocol value -> label shown to the user.
+PROTOCOL_LABELS = {"SFTP": "SFTP", "FTPS": "FTPS explicite", "FTPSI": "FTPS implicite", "FTP": "FTP"}
+DEFAULT_PORTS = {"SFTP": 22, "FTPS": 21, "FTPSI": 990, "FTP": 21}
+
+
+def protocol_label(protocol: str) -> str:
+    return PROTOCOL_LABELS.get(protocol, protocol)
+
+
 @dataclass(frozen=True)
 class Entry:
     name: str

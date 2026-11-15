@@ -120,6 +120,7 @@ def test_directory_progress_must_measure_total_bytes(tmp_path):
             self.entries[remote] = Entry(Path(remote).name, False, size)
             callback(size, size)
         def replace(self, source, target): self.entries[target] = self.entries.pop(source)
+        def checksum(self, path): return None
 
     worker = TransferWorker(Transfer(Connection("audit.invalid", "audit"), str(folder), "/folder", True, True))
     progress = []

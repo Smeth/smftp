@@ -56,7 +56,7 @@ def test_gui_receives_progress_while_connection_worker_is_busy(monkeypatch):
             return "/"
         def listdir(self, path):
             return []
-    monkeypatch.setattr(module, "FTPClient", WaitingFTP)
+    monkeypatch.setattr(module, "make_client", lambda protocol, hosts, reporter: WaitingFTP(reporter))
     window = MainWindow()
     window.connection = Connection("test.local", "alice", "FTP", 21, "private")
     window.activity_tabs.setCurrentWidget(window.transfers)

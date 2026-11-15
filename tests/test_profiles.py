@@ -16,10 +16,13 @@ def test_filezilla_import_nested_passwords_and_unsupported(tmp_path):
       <Server><Host>ftp.test</Host><Protocol>4</Protocol><User>bob</User><Pass>plain-secret</Pass></Server>
       <Server><Host>encrypted.test</Host><Protocol>0</Protocol><User>eve</User><Pass encoding="crypt">encrypted</Pass></Server>
       <Server><Host>implicit.test</Host><Protocol>3</Protocol><User>bob</User></Server>
+      <Server><Host>s3.test</Host><Protocol>7</Protocol><User>bob</User></Server>
       <Server><Host>invalid.test</Host><Port>99999</Port><User>bob</User></Server>
     </Folder></Servers></FileZilla3>''', encoding="utf-8")
     result = read_profiles(str(path))
-    assert len(result.profiles) == 3
+    assert len(result.profiles) == 4
+    implicit = next(site for site in result.profiles if site["host"] == "implicit.test")
+    assert (implicit["protocol"], implicit["port"]) == ("FTPSI", 990)
     assert result.profiles[0]["name"] == "Production SSH"
     assert result.profiles[0]["key_file"] == "/keys/id_ed25519"
     assert result.passwords[identity(result.profiles[0])] == "sëcret"

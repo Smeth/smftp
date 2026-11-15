@@ -16,6 +16,7 @@ from smftp.workers.transfer import Transfer
 from smftp.core.errors import ErrorInfo, describe_error, redact
 from smftp.utils.profiles import profile_for, merge_profiles, normalize_profile, store_credential, identity, read_profiles, XMLCorrectionRequired
 from smftp.ui.workspace_features import WorkspaceFeatures
+from smftp.models.entries import protocol_label
 
 
 class MainWindow(WorkspaceFeatures, QMainWindow):
@@ -127,6 +128,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         tabs.addTab(self.logs, self.tr("Journal de connexion"))
         self.transfers = Transfers(self)
         self.transfers.concurrency.setValue(self.settings.value("concurrency", 2, type=int))
+        self.transfers.verify = self.settings.value("verify_checksum", True, type=bool)
         self.transfers.completed.connect(self.transfer_completed)
         self.transfers.changed.connect(self.refresh)
         self.transfers.outcome.connect(self.transfer_outcome)
@@ -307,13 +309,13 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.connect_button.setEnabled(False)
         self.disconnect_button.setEnabled(False)
         self.statusBar().showMessage(self.tr("Connexion en cours…"))
-        self.log(self.tr("Ouverture d’une connexion %s.") % self.connection.protocol)
+        self.log(self.tr("Ouverture d’une connexion %s.") % protocol_label(self.connection.protocol))
         self.connect_requested.emit(self.connection)
 
     def on_connected(self, path):
         self.online = True
         self.disconnect_button.setEnabled(True)
-        self.statusBar().showMessage(f"●  Connecté    •    {self.connection.host}    •    {self.connection.protocol}")
+        self.statusBar().showMessage(f"●  Connecté    •    {self.connection.host}    •    {protocol_label(self.connection.protocol)}")
         self.log(self.tr("Connexion établie. Lecture du dossier distant…"))
         self.record_recent_connection()
 
@@ -660,52 +662,85 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         if dialog.exec():
             dialog.persist(self.settings)
             self.transfers.concurrency.setValue(dialog.count.value())
+            self.transfers.verify = dialog.verify.isChecked()
+
+    def sync_running(self):
+        return any(w.isRunning() for w in (getattr(self, "sync_worker", None), getattr(self, "sync_deleter", None)) if w)
 
     def synchronize(self):
         from smftp.workers.sync import SyncPlanner
-        if not self.online or (hasattr(self, "sync_worker") and self.sync_worker.isRunning()):
+        from PySide6.QtWidgets import QDialog, QComboBox, QCheckBox, QDialogButtonBox, QFormLayout
+        if not self.online or self.sync_running():
             return
-        direction, ok = QInputDialog.getItem(self, self.tr("Synchroniser"), self.tr("Sens de copie (aucune suppression) :"), [self.tr("Local → Distant"), self.tr("Distant → Local")], 0, False)
-        if not ok:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self.tr("Synchroniser"))
+        form = QFormLayout(dialog)
+        direction = QComboBox()
+        direction.addItems([self.tr("Local → Distant"), self.tr("Distant → Local")])
+        form.addRow(self.tr("Sens de copie"), direction)
+        content = QCheckBox(self.tr("Comparer le contenu par empreinte (SHA-256 si le serveur le permet ; plus lent)"))
+        content.setToolTip(self.tr("Les fichiers de même taille sont comparés par empreinte au lieu de la date."))
+        form.addRow(content)
+        mirror = QCheckBox(self.tr("Mode miroir : supprimer dans la destination les éléments absents de la source"))
+        form.addRow(mirror)
+        hint = QLabel(self.tr("Sans le mode miroir, rien n’est supprimé. Un aperçu est toujours présenté avant toute action."))
+        hint.setWordWrap(True)
+        form.addRow(hint)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(self.tr("Comparer"))
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(self.tr("Annuler"))
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if not dialog.exec():
             return
-        upload = direction == self.tr("Local → Distant")
+        upload = direction.currentIndex() == 0
         local, remote, connection = self.local.path, self.remote.path, self.connection
-        self.sync_worker = SyncPlanner(connection, local, remote, upload, self)
+        self.sync_worker = SyncPlanner(connection, local, remote, upload, self,
+                                       compare_content=content.isChecked(), mirror=mirror.isChecked())
         self.sync_worker.failed.connect(self.on_error)
+        self.sync_worker.note.connect(self.log)
         self.sync_worker.planned.connect(lambda plan: self.show_sync_plan(plan, connection, local, remote, upload))
         self.log(self.tr("Comparaison récursive des dossiers en cours…"))
         self.sync_worker.start()
 
     def show_sync_plan(self, plan, connection, local, remote, upload):
         import posixpath
-        from PySide6.QtWidgets import QDialog, QTreeWidget, QTreeWidgetItem, QDialogButtonBox
+        from PySide6.QtWidgets import QDialog, QTreeWidget, QTreeWidgetItem, QDialogButtonBox, QCheckBox
+        from PySide6.QtGui import QBrush, QColor
         from smftp.ui.explorer import size_label
+        from smftp.workers.sync import DELETIONS, DELETE_DIR
         if not plan:
             self.log(self.tr("Synchronisation : aucun fichier nouveau ou différent."))
-            QMessageBox.information(self, self.tr("Synchroniser"), self.tr("Les dossiers sont déjà synchronisés dans ce sens : aucun fichier nouveau ou différent (taille et date comparées)."))
+            QMessageBox.information(self, self.tr("Synchroniser"), self.tr("Les dossiers sont déjà synchronisés dans ce sens : aucun fichier nouveau ou différent."))
             return
+        mirror = any(row[1] in DELETIONS for row in plan)
         dialog = QDialog(self)
-        dialog.setWindowTitle(self.tr("Aperçu de synchronisation — aucune suppression"))
+        dialog.setWindowTitle(self.tr("Aperçu de synchronisation — miroir" if mirror else "Aperçu de synchronisation — aucune suppression"))
         dialog.resize(760, 480)
         layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel(self.tr("Sélectionnez les fichiers à copier. Taille et date sont comparées ; le contenu n’est pas haché.")))
+        layout.addWidget(QLabel(self.tr("Sélectionnez les éléments à traiter. Les suppressions sont définitives ; "
+                                        "un fichier modifié depuis la comparaison est conservé.") if mirror else
+                                self.tr("Sélectionnez les fichiers à copier. Rien n’est supprimé.")))
         table = QTreeWidget()
-        table.setHeaderLabels([self.tr("Fichier"), self.tr("Action"), self.tr("Taille")])
+        table.setHeaderLabels([self.tr("Élément"), self.tr("Action"), self.tr("Taille")])
         table.setColumnWidth(0, 450)
+        warning = QBrush(QColor("#d64545"))
         for path, state, size, _ in plan:
-            item = QTreeWidgetItem([path, self.tr(state), size_label(size)])
+            item = QTreeWidgetItem([path + ("/" if state == DELETE_DIR else ""), self.tr(state), "" if state == DELETE_DIR else size_label(size)])
             item.setCheckState(0, Qt.CheckState.Checked)
+            if state in DELETIONS:
+                item.setForeground(1, warning)
             table.addTopLevelItem(item)
         layout.addWidget(table)
         summary = QLabel()
         layout.addWidget(summary)
-        from PySide6.QtWidgets import QCheckBox
         all_box = QCheckBox(self.tr("Tout sélectionner"))
         all_box.setChecked(True)
         layout.addWidget(all_box)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         copy_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        copy_button.setText(self.tr("Copier la sélection"))
+        copy_button.setText(self.tr("Appliquer la sélection" if mirror else "Copier la sélection"))
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
@@ -715,7 +750,11 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
 
         def update_summary(*_):
             rows = checked_rows()
-            summary.setText(self.tr("%n fichier(s) sélectionné(s)", "", len(rows)) + f" • {size_label(sum(plan[i][2] for i in rows))}")
+            copies = [i for i in rows if plan[i][1] not in DELETIONS]
+            text = self.tr("%n fichier(s) à copier", "", len(copies)) + f" • {size_label(sum(plan[i][2] for i in copies))}"
+            if mirror:
+                text += " • " + self.tr("%n suppression(s)", "", len(rows) - len(copies))
+            summary.setText(text)
             copy_button.setEnabled(bool(rows))
 
         def toggle_all(checked):
@@ -726,19 +765,38 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         table.itemChanged.connect(update_summary)
         all_box.toggled.connect(toggle_all)
         update_summary()
-        if dialog.exec():
-            for i, (path, _, _, expected) in enumerate(plan):
-                if table.topLevelItem(i).checkState(0) == Qt.CheckState.Checked:
-                    from smftp.utils.paths import local_child
-                    destination = Path(local)
-                    try:
-                        for part in path.split("/"):
-                            destination = local_child(destination, part)
-                    except ValueError as error:
-                        self.on_error(str(error))
-                        return
-                    self.transfers.add(Transfer(connection, str(destination), posixpath.join(remote, path), upload,
-                                                conflict="ask", planned=True, expected=expected))
+        if not dialog.exec():
+            return
+        selected = [plan[i] for i in checked_rows()]
+        deletions = [row for row in selected if row[1] in DELETIONS]
+        if deletions:
+            side = self.tr("sur le serveur") if upload else self.tr("sur ce PC")
+            if QMessageBox.question(self, self.tr("Confirmer les suppressions"),
+                    self.tr("%n élément(s) vont être supprimés définitivement %1. Continuer ?", "", len(deletions)).replace("%1", side),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                deletions = []
+                self.log(self.tr("Synchronisation : suppressions annulées ; seules les copies sont lancées."))
+        for path, state, _, expected in selected:
+            if state in DELETIONS:
+                continue
+            from smftp.utils.paths import local_child
+            destination = Path(local)
+            try:
+                for part in path.split("/"):
+                    destination = local_child(destination, part)
+            except ValueError as error:
+                self.on_error(str(error))
+                return
+            self.transfers.add(Transfer(connection, str(destination), posixpath.join(remote, path), upload,
+                                        conflict="ask", planned=True, expected=expected))
+        if deletions:
+            from smftp.workers.sync import SyncDeleter
+            self.sync_deleter = SyncDeleter(connection, local, remote, upload, deletions, self)
+            self.sync_deleter.report.connect(self.log)
+            self.sync_deleter.done.connect(lambda deleted, kept: (
+                self.log(self.tr("Synchronisation miroir : %1 supprimé(s), %2 conservé(s).").replace("%1", str(deleted)).replace("%2", str(kept))),
+                self.refresh()))
+            self.sync_deleter.start()
 
     def edit_remote(self, external=False):
         import tempfile
@@ -964,7 +1022,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                     event.ignore()
                     return
         local_active = any(w.isRunning() for w in getattr(self, "local_workers", []))
-        sync_active = (hasattr(self, "sync_worker") and self.sync_worker.isRunning()) or any(w.isRunning() for w in self.search_workers)
+        sync_active = self.sync_running() or any(w.isRunning() for w in self.search_workers)
         if self.thread.isRunning() or self.transfers.active() or local_active or sync_active:
             event.ignore()
             if not self.closing:
@@ -974,8 +1032,9 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                 self.transfers.stop_all()
                 for worker in self.search_workers:
                     worker.requestInterruption()
-                if hasattr(self, "sync_worker"):
-                    self.sync_worker.requestInterruption()
+                for worker in (getattr(self, "sync_worker", None), getattr(self, "sync_deleter", None)):
+                    if worker:
+                        worker.requestInterruption()
                 # Quit after queued operations and cleanup have completed.
                 self.session.disconnected.connect(self.thread.quit)
                 self.disconnect_requested.emit()
@@ -986,7 +1045,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             event.accept()
 
     def finish_close(self):
-        sync_active = (hasattr(self, "sync_worker") and self.sync_worker.isRunning()) or any(w.isRunning() for w in self.search_workers)
+        sync_active = self.sync_running() or any(w.isRunning() for w in self.search_workers)
         if self.closing and not self.thread.isRunning() and not self.transfers.active() and not sync_active and not any(w.isRunning() for w in getattr(self, "local_workers", [])):
             if hasattr(self, "close_timer"):
                 self.close_timer.stop()

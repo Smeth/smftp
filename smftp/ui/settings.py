@@ -25,6 +25,11 @@ class SettingsDialog(QDialog):
         self.reconnect = QCheckBox(self.tr("Reconnexion automatique après erreur réseau (3 essais maximum)"))
         self.reconnect.setChecked(settings.value("auto_reconnect", False, type=bool))
         layout.addRow(self.reconnect)
+        self.verify = QCheckBox(self.tr("Vérifier l’empreinte (SHA-256 si possible) après chaque transfert"))
+        self.verify.setToolTip(self.tr("Le serveur calcule l’empreinte du fichier, comparée à la copie locale. "
+                                       "Sans prise en charge par le serveur, seule la taille est vérifiée."))
+        self.verify.setChecked(settings.value("verify_checksum", True, type=bool))
+        layout.addRow(self.verify)
         self.notifications = QCheckBox(self.tr("Notifications système de fin de transfert"))
         self.notifications.setChecked(settings.value("notifications", True, type=bool))
         layout.addRow(self.notifications)
@@ -40,3 +45,4 @@ class SettingsDialog(QDialog):
         settings.setValue("conflict", self.conflict.currentData())
         settings.setValue("auto_reconnect", self.reconnect.isChecked())
         settings.setValue("notifications", self.notifications.isChecked())
+        settings.setValue("verify_checksum", self.verify.isChecked())

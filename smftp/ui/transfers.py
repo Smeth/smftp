@@ -24,6 +24,7 @@ class Transfers(QWidget):
         self.stopping = False
         self.paused = False
         self.limiter = RateLimiter()
+        self.verify = True  # Fingerprint check after each file (preference).
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
         bar = QHBoxLayout()
@@ -76,6 +77,7 @@ class Transfers(QWidget):
         self.tables[0].setItemWidget(item, 2, progress)
         worker = TransferWorker(task, self)
         worker.limiter = self.limiter
+        worker.verify = self.verify
         record = {"task": task, "item": item, "bar": progress, "worker": worker,
                   "state": "paused_pending" if restored else "pending", "speed": 0,
                   "restored": restored, "transient": transient}

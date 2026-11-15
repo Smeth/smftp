@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QApplication, QMessageBox, QFileDialog
+from PySide6.QtWidgets import QApplication, QMessageBox, QFileDialog, QLineEdit
 from PySide6.QtCore import QEventLoop, QTimer
 from smftp.models.entries import Connection
 from smftp.ui.connection_dialog import ConnectionDialog
@@ -15,6 +15,12 @@ def test_connection_dialog_loads_vault_and_saves_without_connecting(monkeypatch)
     assert dialog.name.text() == "Production"
     assert dialog.password.text() == "remembered-secret"
     assert dialog.remember.isChecked()
+    assert dialog.password.echoMode() == QLineEdit.EchoMode.Password
+    dialog.show_password.click()
+    assert dialog.password.echoMode() == QLineEdit.EchoMode.Normal
+    assert dialog.show_password.text() == "Masquer"
+    dialog.show_password.click()
+    assert dialog.password.echoMode() == QLineEdit.EchoMode.Password
     assert dialog.save_button.isEnabled()
     dialog.accept_save_only()
     assert dialog.save_only

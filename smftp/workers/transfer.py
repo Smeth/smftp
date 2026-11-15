@@ -1,5 +1,5 @@
 """Independent transfer connections with cooperative pause and cancellation."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import os
 import posixpath
@@ -7,7 +7,7 @@ from threading import Event, Lock
 import time
 import hashlib
 from PySide6.QtCore import QThread, Signal
-from smftp.core.clients import FTPClient, FTPSClient, SFTPClient
+from smftp.core.clients import make_client
 from smftp.models.entries import Connection
 from smftp.utils.storage import data_dir
 
@@ -26,6 +26,9 @@ class Transfer:
     # destination that still matches is overwritten; any other one is asked.
     planned: bool = False
     expected: tuple | None = None
+    # Directory tasks: remote path -> [source size, source date, destination size,
+    # destination date or None] of each file already copied, so a resume skips it.
+    completed: dict = field(default_factory=dict)
 
 
 def valid_remote_name(name: str) -> bool:
@@ -86,6 +89,8 @@ class TransferWorker(QThread):
         self.done_bytes = 0
         self.listings = {}
         self.remote_entries = {}
+        self.verify = True  # Compare a content fingerprint after each file.
+        self.hash_warned = False
 
     def cancel(self):
         self.cancelled.set()
@@ -222,6 +227,9 @@ class TransferWorker(QThread):
                 raise FileNotFoundError(remote)
             source_size = source.size
         existing = client.exists(remote) if self.task.upload else (local.stat() if local.exists() else None)
+        if self.already_completed(local, remote, source, existing):
+            self.report_activity(f"Statut : déjà copié lors d’une tentative précédente, ignoré : {local.name}")
+            return source_size
         offset = 0
         resume = bool(self.task.resume)
         if existing:
@@ -275,12 +283,76 @@ class TransferWorker(QThread):
                     raise RuntimeError("Le fichier local a changé pendant l’envoi. Le fichier distant d’origine est conservé.")
                 if uploaded is None or uploaded.size != info.st_size:
                     raise RuntimeError("La taille du fichier temporaire distant ne correspond pas à la source. Publication annulée.")
+                if not self.verify_content(client, local, temporary):
+                    try:
+                        client.unlink(temporary)
+                    except Exception:
+                        pass
+                    raise RuntimeError("L’empreinte du fichier envoyé ne correspond pas à la source. "
+                                       "Le fichier distant d’origine est conservé ; le temporaire a été supprimé.")
                 client.replace(temporary, remote)
             else:
                 client.upload(str(local), remote, self.progress, offset)
+                if not self.verify_content(client, local, remote):
+                    raise RuntimeError("L’empreinte du fichier distant ne correspond pas à la source : renvoyez-le.")
         else:
             self.download(client, local, remote, source, resume)
+        self.record_completed(local, remote, source)
         return source_size
+
+    def verify_content(self, client, local: Path, remote: str, name: str = "") -> bool:
+        """True when fingerprints match or cannot be computed by the server."""
+        if not self.verify:
+            return True
+        self.checkpoint()
+        result = client.checksum(remote)
+        if result is None:
+            if not self.hash_warned:
+                self.hash_warned = True
+                self.report_activity("Statut : le serveur ne calcule pas d’empreinte ; seule la taille est vérifiée.")
+            return True
+        from smftp.core.checksum import local_digest, LABELS
+        algorithm, digest = result
+        name = name or local.name
+        if local_digest(local, algorithm, self.checkpoint) != digest:
+            self.report_activity(f"Erreur : empreinte {LABELS[algorithm]} différente pour {name}.")
+            return False
+        self.report_activity(f"Statut : empreinte {LABELS[algorithm]} vérifiée : {name}")
+        return True
+
+    def source_signature(self, local: Path, source) -> list:
+        if self.task.upload:
+            info = local.stat()
+            return [info.st_size, info.st_mtime]
+        return [source.size, source.modified]
+
+    def record_completed(self, local: Path, remote: str, source) -> None:
+        if not self.task.directory:
+            return
+        try:
+            signature = self.source_signature(local, source)
+            if self.task.upload:
+                signature += [signature[0], None]
+            else:
+                info = local.stat()
+                signature += [info.st_size, info.st_mtime_ns]
+            self.task.completed[remote] = signature
+        except OSError:
+            pass
+
+    def already_completed(self, local: Path, remote: str, source, existing) -> bool:
+        """A resumed directory skips files finished earlier that are still unchanged on both sides."""
+        record = self.task.completed.get(remote) if self.task.resume and self.task.directory else None
+        if not record or existing is None:
+            return False
+        try:
+            if self.source_signature(local, source) != record[:2]:
+                return False
+        except OSError:
+            return False
+        if self.task.upload:
+            return not existing.is_dir and existing.size == record[2] and (record[3] is None or existing.modified == record[3])
+        return local.is_file() and existing.st_size == record[2] and existing.st_mtime_ns == record[3]
 
     def download(self, client, local: Path, remote: str, source, resume: bool):
         """Download into a hidden partial file tied to the remote size and date.
@@ -304,6 +376,10 @@ class TransferWorker(QThread):
         if temporary.stat().st_size != source.size:
             temporary.unlink(missing_ok=True)
             raise RuntimeError("La taille téléchargée ne correspond pas au fichier distant, qui a peut-être changé. Le fichier local d’origine est conservé.")
+        if not self.verify_content(client, temporary, remote, local.name):
+            temporary.unlink(missing_ok=True)
+            raise RuntimeError("L’empreinte du fichier téléchargé ne correspond pas au fichier distant. "
+                               "Le fichier local d’origine est conservé ; relancez le téléchargement.")
         os.replace(temporary, local)
 
     def run(self):
@@ -311,7 +387,7 @@ class TransferWorker(QThread):
         try:
             self.checkpoint()
             protocol = self.task.connection.protocol
-            client = SFTPClient(str(data_dir() / "known_hosts"), self.report_activity) if protocol == "SFTP" else (FTPSClient(self.report_activity) if protocol == "FTPS" else FTPClient(self.report_activity))
+            client = make_client(protocol, str(data_dir() / "known_hosts"), self.report_activity)
             client.connect(self.task.connection)
             self.copy(client, Path(self.task.local), self.task.remote, self.task.directory)
             self.report_activity("Statut : transfert terminé.")

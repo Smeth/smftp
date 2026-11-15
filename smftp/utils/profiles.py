@@ -5,15 +5,15 @@ import json
 import re
 from pathlib import Path
 import xml.etree.ElementTree as ET
-from smftp.models.entries import Connection
+from smftp.models.entries import Connection, DEFAULT_PORTS
 
 def normalize_profile(site: dict) -> dict:
     if not isinstance(site, dict):
         raise ValueError("Le profil doit être un objet.")
     protocol = site.get("protocol", "SFTP")
     host, user = site.get("host", ""), site.get("user", "")
-    port = int(site.get("port", 22 if protocol == "SFTP" else 21))
-    if protocol not in ("SFTP", "FTP", "FTPS") or not 1 <= port <= 65535:
+    port = int(site.get("port", DEFAULT_PORTS.get(protocol, 21)))
+    if protocol not in DEFAULT_PORTS or not 1 <= port <= 65535:
         raise ValueError("Protocole ou port invalide.")
     if not isinstance(host, str) or not host.strip() or any(c in host for c in "/\\@\r\n\t "):
         raise ValueError("Hôte invalide : saisissez une adresse sans préfixe ftp:// ni chemin.")
@@ -181,9 +181,9 @@ def read_profiles(filename: str, *, repair_header: bool = False) -> ImportResult
     parents = {child: parent for parent in root.iter() for child in parent}
     for number, server in enumerate(servers, 1):
         label = server.findtext("Name") or server.findtext("Host") or f"Serveur {number}"
-        protocol = {"0": "FTP", "1": "SFTP", "4": "FTPS"}.get(server.findtext("Protocol", "0"))
+        protocol = {"0": "FTP", "1": "SFTP", "3": "FTPSI", "4": "FTPS"}.get(server.findtext("Protocol", "0"))
         if not protocol:
-            result.warnings.append(f"{label} : protocole FileZilla non pris en charge (FTPS implicite, etc.).")
+            result.warnings.append(f"{label} : protocole FileZilla non pris en charge (FTP non sécurisé imposé, stockage cloud, etc.).")
             continue
         logon = server.findtext("Logontype", "1")
         user = server.findtext("User", "")
@@ -203,7 +203,7 @@ def read_profiles(filename: str, *, repair_header: bool = False) -> ImportResult
                 result.warnings.append(f"{label} : chemin distant FileZilla encodé non importé ; choisissez-le dans Modifier.")
                 remote_directory = ""
             site = normalize_profile(dict(host=server.findtext("Host", ""), user=user,
-                port=server.findtext("Port", "22" if protocol == "SFTP" else "21"),
+                port=server.findtext("Port", str(DEFAULT_PORTS[protocol])),
                 protocol=protocol, name=label, key_file=server.findtext("Keyfile", ""),
                 group=" / ".join(groups), local_directory=server.findtext("LocalDir", ""),
                 remote_directory=remote_directory))

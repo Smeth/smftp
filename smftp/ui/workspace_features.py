@@ -203,7 +203,8 @@ class WorkspaceFeatures:
             if group not in groups:
                 groups[group] = QTreeWidgetItem([group])
                 tree.addTopLevelItem(groups[group])
-            item = QTreeWidgetItem([site.get("name") or site["host"], site["host"], site["protocol"]])
+            from smftp.models.entries import protocol_label
+            item = QTreeWidgetItem([site.get("name") or site["host"], site["host"], protocol_label(site["protocol"])])
             item.setData(0, Qt.ItemDataRole.UserRole, site)
             groups[group].addChild(item)
         tree.expandAll()
@@ -432,7 +433,7 @@ class WorkspaceFeatures:
             "Glisser vers Windows : clic droit distant → Préparer le glisser-déposer externe, puis glisser après téléchargement."))
 
     def ftp_command(self):
-        if not self.online or self.connection.protocol not in ("FTP", "FTPS"):
+        if not self.online or self.connection.protocol not in ("FTP", "FTPS", "FTPSI"):
             self.on_error(self.tr("La console de commandes est disponible pour les connexions FTP et FTPS actives."))
             return
         command, accepted = QInputDialog.getText(self, self.tr("Commande FTP"),

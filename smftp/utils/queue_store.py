@@ -12,7 +12,7 @@ from smftp.workers.transfer import Transfer
 def write_queue(tasks: list[Transfer]) -> None:
     rows = [dict(profile=profile_for(t.connection), local=t.local, remote=t.remote,
                  upload=t.upload, directory=t.directory, conflict=t.conflict,
-                 safe_upload=t.safe_upload) for t in tasks]
+                 safe_upload=t.safe_upload, completed=dict(t.completed)) for t in tasks]
     path = data_dir() / "queue.json"
     temporary = None
     try:
@@ -60,6 +60,12 @@ def read_queue() -> list[Transfer]:
         conflict = row.get("conflict", "ask")
         if conflict not in ("ask", "skip", "rename", "overwrite", "newer", "different", "resume"):
             conflict = "ask"
+        completed = row.get("completed", {})
+        if not isinstance(completed, dict) or not all(
+                isinstance(k, str) and isinstance(v, list) and len(v) == 4 and
+                all(x is None or isinstance(x, (int, float)) for x in v) for k, v in completed.items()):
+            completed = {}  # Unreadable progress only costs a full copy.
         tasks.append(Transfer(profile, row["local"], row["remote"], bool(row["upload"]),
-                     bool(row.get("directory")), True, conflict, bool(row.get("safe_upload", True))))
+                     bool(row.get("directory")), True, conflict, bool(row.get("safe_upload", True)),
+                     completed=completed))
     return tasks

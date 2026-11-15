@@ -52,7 +52,10 @@ def describe_error(error: Exception, connection: Connection | None = None,
     elif isinstance(error, ssl.SSLCertVerificationError):
         summary = "Certificat TLS invalide, expiré ou ne correspondant pas à l’hôte. La connexion est bloquée."
     elif isinstance(error, ssl.SSLError):
-        summary = "Échec de négociation TLS. Vérifiez que ce port accepte le FTPS explicite."
+        summary = ("Échec de négociation TLS. Vérifiez que ce port accepte le FTPS implicite (souvent 990)."
+                   if getattr(connection, "protocol", "") == "FTPSI" else
+                   "Échec de négociation TLS. Vérifiez que ce port accepte le FTPS explicite (souvent 21) ; "
+                   "sinon essayez FTPS implicite.")
     elif name == "BadHostKeyException":
         summary = "La clé SSH du serveur a changé. Connexion bloquée : vérifiez son identité auprès de l’administrateur."
     elif name == "PasswordRequiredException":

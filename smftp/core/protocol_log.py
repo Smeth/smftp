@@ -1,5 +1,6 @@
 """FTP protocol tracing without ftplib debug output or credential disclosure."""
 import ftplib
+import ssl
 
 
 class FTPTrace:
@@ -37,3 +38,26 @@ class LoggedFTP(FTPTrace, ftplib.FTP):
 
 class LoggedFTPS(FTPTrace, ftplib.FTP_TLS):
     pass
+
+
+class ImplicitFTP_TLS(ftplib.FTP_TLS):
+    """Wraps the control socket as soon as it is connected (implicit FTPS)."""
+    _sock = None
+
+    @property
+    def sock(self):
+        return self._sock
+
+    @sock.setter
+    def sock(self, value):
+        if value is not None and not isinstance(value, ssl.SSLSocket):
+            value = self.context.wrap_socket(value, server_hostname=self.host)
+        self._sock = value
+
+
+class LoggedImplicitFTPS(FTPTrace, ImplicitFTP_TLS):
+    def connect(self, *args, **kwargs):
+        self.emit_trace("Statut : FTPS implicite — négociation TLS et vérification du certificat dès la connexion…")
+        response = super().connect(*args, **kwargs)
+        self.emit_trace("Statut : connexion TLS établie, certificat vérifié.")
+        return response

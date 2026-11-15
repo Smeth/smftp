@@ -68,6 +68,7 @@ class MemoryClient:
         self.uploaded.append(remote)
         callback(3, 3)
     def replace(self, source, target): pass
+    def checksum(self, path): return None
 
 
 def planned_worker(tmp_path, expected):

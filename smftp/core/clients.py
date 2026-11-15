@@ -9,7 +9,8 @@ import stat
 import posixpath
 from pathlib import Path
 from smftp.models.entries import Connection, Entry
-from smftp.core.protocol_log import LoggedFTP, LoggedFTPS
+from smftp.core.protocol_log import LoggedFTP, LoggedFTPS, LoggedImplicitFTPS
+from smftp.core.checksum import ALGORITHMS, LABELS, normalize_algorithm, parse_digest
 from smftp.core.errors import redact
 
 
@@ -52,6 +53,10 @@ class BaseClient(ABC):
 
     def mkdir(self, path: str) -> None:
         raise NotImplementedError
+
+    def checksum(self, path: str) -> tuple[str, str] | None:
+        """(hashlib algorithm, hex digest) computed by the server, or None if unsupported."""
+        return None
 
     def rename(self, source: str, target: str) -> None:
         raise NotImplementedError
@@ -104,11 +109,17 @@ class BaseClient(ABC):
 
 class FTPClient(BaseClient):
     tls = False
+    implicit = False
+    hash_method = None  # None = not detected yet, False = unsupported.
 
     def connect(self, connection: Connection) -> str:
         self.secrets = (connection.password,)
-        self.ftp = (LoggedFTPS(context=ssl.create_default_context())
-                    if self.tls else LoggedFTP())
+        self.timeout = connection.timeout
+        if self.implicit:
+            self.ftp = LoggedImplicitFTPS(context=ssl.create_default_context())
+        else:
+            self.ftp = (LoggedFTPS(context=ssl.create_default_context())
+                        if self.tls else LoggedFTP())
         self.ftp.trace = self.report
         self.report(f"Statut : résolution de {connection.host} et connexion TCP au port {connection.port}…")
         self.ftp.connect(connection.host, connection.port, timeout=connection.timeout)
@@ -172,6 +183,61 @@ class FTPClient(BaseClient):
     def mkdir(self, path):
         self.ftp.mkd(path)
 
+    def detect_hash(self):
+        """HASH (draft-bryan-ftpext-hash) first, then the XSHA256/XSHA1/XMD5 extensions."""
+        try:
+            features = self.ftp.sendcmd("FEAT").splitlines()
+        except ftplib.all_errors:
+            features = []
+        names = {line.strip().split(" ", 1)[0].upper(): line.strip() for line in features[1:-1]}
+        if "HASH" in names:
+            offered = {}
+            for item in names["HASH"].split(" ", 1)[-1].split(";"):
+                algorithm = normalize_algorithm(item.rstrip("*"))
+                if algorithm:
+                    offered[algorithm] = item.endswith("*")
+            for algorithm in ALGORITHMS:
+                if algorithm in offered:
+                    if not offered[algorithm]:
+                        try:
+                            self.ftp.sendcmd(f"OPTS HASH {LABELS[algorithm]}")
+                        except ftplib.all_errors:
+                            continue
+                    return ("HASH", algorithm)
+        for command, algorithm in (("XSHA256", "sha256"), ("XSHA512", "sha512"), ("XSHA1", "sha1"), ("XMD5", "md5")):
+            if command in names:
+                return (command, algorithm)
+        return False
+
+    def checksum(self, path):
+        if self.hash_method is None:
+            self.hash_method = self.detect_hash()
+            if self.hash_method:
+                self.report(f"Statut : empreinte serveur disponible ({self.hash_method[0]} {LABELS[self.hash_method[1]]}).")
+        if not self.hash_method:
+            return None
+        command, algorithm = self.hash_method
+        sock = self.ftp.sock
+        previous = sock.gettimeout() if sock else None
+        try:
+            # Hashing a large file takes the server longer than a normal reply.
+            if sock:
+                sock.settimeout(max(previous or 0, 600))
+            response = self.ftp.sendcmd(f"{command} {path}")
+        except ftplib.error_perm:
+            return None
+        finally:
+            if sock:
+                sock.settimeout(previous)
+        if command == "HASH":
+            parts = response[4:].split(" ", 3)
+            if len(parts) < 3 or normalize_algorithm(parts[0]) != algorithm:
+                return None
+            digest = parse_digest(parts[2], algorithm)
+        else:
+            digest = parse_digest(response[4:], algorithm)
+        return (algorithm, digest) if digest else None
+
     def rename(self, source, target):
         self.ftp.rename(source, target)
 
@@ -194,10 +260,27 @@ class FTPSClient(FTPClient):
     tls = True
 
 
+class ImplicitFTPSClient(FTPClient):
+    """FTPS where TLS starts with the TCP connection (usually port 990)."""
+    tls = True
+    implicit = True
+
+
+def make_client(protocol: str, known_hosts: str, reporter=None) -> BaseClient:
+    if protocol == "SFTP":
+        return SFTPClient(known_hosts, reporter)
+    return {"FTP": FTPClient, "FTPS": FTPSClient, "FTPSI": ImplicitFTPSClient}[protocol](reporter)
+
+
 class SFTPClient(BaseClient):
+    # Tried in order; a restricted account (internal-sftp) gets no output and is not retried.
+    HASH_COMMANDS = (("sha256", "sha256sum -b --"), ("sha256", "shasum -a 256 -b --"),
+                     ("sha1", "sha1sum -b --"), ("md5", "md5sum -b --"))
+
     def __init__(self, known_hosts: str, reporter=None):
         super().__init__(reporter)
         self.known_hosts = known_hosts
+        self.hash_command = None  # None = not detected, False = unsupported.
 
     def connect(self, connection: Connection) -> str:
         import paramiko
@@ -238,6 +321,7 @@ class SFTPClient(BaseClient):
                          look_for_keys=False, allow_agent=False, transport_factory=ReportingTransport)
         self.report("Statut : authentification SSH réussie ; ouverture du sous-système SFTP…")
         self.ssh.get_transport().set_keepalive(30)
+        self.timeout = connection.timeout
         self.sftp = self.ssh.open_sftp()
         self.sftp.get_channel().settimeout(connection.timeout)
         self.report("Statut : sous-système SFTP ouvert ; lecture du dossier de départ…")
@@ -266,6 +350,46 @@ class SFTPClient(BaseClient):
 
     def mkdir(self, path):
         self.sftp.mkdir(path)
+
+    def run_hash(self, command: str, algorithm: str, path: str) -> str | None:
+        import shlex
+        import paramiko
+        try:
+            channel = self.ssh.get_transport().open_session(timeout=self.timeout)
+        except (paramiko.SSHException, OSError):
+            return None
+        try:
+            channel.settimeout(max(self.timeout, 600))
+            channel.exec_command(f"{command} {shlex.quote(path)}")
+            # EOF on stdin: a forced internal-sftp exits instead of waiting.
+            channel.shutdown_write()
+            output = b""
+            while chunk := channel.recv(4096):
+                output += chunk
+                if len(output) > 65536:
+                    return None
+            if channel.recv_exit_status() != 0:
+                return None
+            return parse_digest(output.decode("utf-8", "replace").split("\n", 1)[0], algorithm)
+        except (paramiko.SSHException, OSError):
+            return None
+        finally:
+            channel.close()
+
+    def checksum(self, path):
+        if self.hash_command is False:
+            return None
+        candidates = [self.hash_command] if self.hash_command else self.HASH_COMMANDS
+        for algorithm, command in candidates:
+            digest = self.run_hash(command, algorithm, path)
+            if digest:
+                if not self.hash_command:
+                    self.report(f"Statut : empreinte serveur disponible ({command.split()[0]}).")
+                self.hash_command = (algorithm, command)
+                return algorithm, digest
+        if not self.hash_command:
+            self.hash_command = False
+        return None
 
     def rename(self, source, target):
         self.sftp.rename(source, target)

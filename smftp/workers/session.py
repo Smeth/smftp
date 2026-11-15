@@ -1,7 +1,7 @@
 """Serialized network operations running outside the GUI thread."""
 import logging
 from PySide6.QtCore import QObject, Signal, Slot
-from smftp.core.clients import FTPClient, FTPSClient, SFTPClient, UnknownHostError, DestinationExists
+from smftp.core.clients import make_client, UnknownHostError, DestinationExists
 from smftp.models.entries import Connection
 from smftp.utils.storage import data_dir
 from smftp.core.errors import describe_error
@@ -33,8 +33,7 @@ class Session(QObject):
         try:
             hosts = data_dir() / "known_hosts"
             hosts.touch(exist_ok=True)
-            factory = {"FTP": FTPClient, "FTPS": FTPSClient}
-            self.client = SFTPClient(str(hosts), self.progress.emit) if connection.protocol == "SFTP" else factory[connection.protocol](self.progress.emit)
+            self.client = make_client(connection.protocol, str(hosts), self.progress.emit)
             path = self.client.connect(connection)
             path = connection.remote_directory or path
             self.connected.emit(path)
