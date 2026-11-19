@@ -195,6 +195,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.dark = self.settings.value("dark", True, type=bool)
         self.apply_theme()
         self.initialize_features()
+        from smftp.ui.scheduler import Scheduler
+        self.scheduler = Scheduler(self)
         self.thread.start()
         self.log(self.tr("Bienvenue. Ouvrez une connexion ou parcourez vos fichiers locaux."))
 
@@ -708,7 +710,9 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             self.transfers.verify = dialog.verify.isChecked()
 
     def sync_running(self):
-        return any(w.isRunning() for w in (getattr(self, "sync_worker", None), getattr(self, "sync_deleter", None)) if w)
+        scheduled = getattr(self, "scheduler", None)
+        return (any(w.isRunning() for w in (getattr(self, "sync_worker", None), getattr(self, "sync_deleter", None)) if w)
+                or bool(scheduled and scheduled.planning()))
 
     def synchronize(self):
         from smftp.workers.sync import SyncPlanner
@@ -1056,6 +1060,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                     message += self.tr("\nLa connexion au serveur sera fermée.")
                 if self.transfers.active():
                     message += self.tr("\nLes transferts seront interrompus et la file sera conservée en pause pour le prochain lancement.")
+                if self.scheduler.enabled_count():
+                    message += self.tr("\nLes tâches planifiées ne s’exécuteront pas tant que SMFTP est fermé.")
                 if dirty or unsent:
                     message += self.tr("\nLes modifications non enregistrées ou non envoyées des copies temporaires seront perdues.")
                 if QMessageBox.question(self, self.tr("Confirmer la fermeture"), message,
@@ -1071,6 +1077,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                 self.retry_timer.stop()
                 self.hide()
                 self.transfers.stop_all()
+                self.scheduler.stop()
                 for worker in self.search_workers:
                     worker.requestInterruption()
                 for worker in (getattr(self, "sync_worker", None), getattr(self, "sync_deleter", None)):

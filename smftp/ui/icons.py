@@ -126,9 +126,22 @@ def _folder(p):
     p.drawPath(path)
 
 
+def _edit(p):
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    body = QPainterPath(QPointF(4, 16))
+    body.lineTo(4.5, 12.5)
+    body.lineTo(13, 4)
+    body.lineTo(16, 7)
+    body.lineTo(7.5, 15.5)
+    body.closeSubpath()
+    p.drawPath(body)
+    p.drawLine(QPointF(11, 6), QPointF(14, 9))
+
+
 SHAPES = {"pause": _pause, "play": _play, "pause_play": _pause_play, "cancel": _cancel,
           "stop": _stop, "retry": _retry, "trash": _trash, "copy": _copy, "save": _save,
-          "eye": _eye, "eye_off": _eye_off, "folder": _folder}
+          "eye": _eye, "eye_off": _eye_off, "folder": _folder,
+          "edit": _edit}
 
 
 def _pixmap(name, color, scale):
