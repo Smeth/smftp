@@ -71,9 +71,9 @@ class WorkspaceFeatures:
         self.add_command(display, "Vue en icônes", self.set_icon_views, checkable=True)
         self.add_command(display, "Panneaux verticaux", lambda checked: self.panel_splitter.setOrientation(
             Qt.Orientation.Vertical if checked else Qt.Orientation.Horizontal), checkable=True)
-        self.add_command(display, "Journal", lambda: self.activity_tabs.setCurrentWidget(self.logs))
+        self.add_command(display, "Journal", lambda: self.activity_tabs.setCurrentWidget(self.log_panel))
         self.add_command(display, "File de transferts", lambda: self.activity_tabs.setCurrentWidget(self.transfers))
-        self.add_command(display, "Effacer le journal", self.logs.clear)
+        self.add_command(display, "Effacer le journal", self.clear_log)
         self.add_command(display, "Thème clair / sombre", self.toggle_theme)
         self.add_command(self.tools_menu, "Commande FTP…", self.ftp_command)
         help_menu = self.menuBar().addMenu(self.tr("Aide"))
@@ -228,9 +228,7 @@ class WorkspaceFeatures:
         dialog.exec()
 
     def cancel_transfers(self):
-        if QMessageBox.question(self, self.tr("Annuler les transferts"), self.tr("Annuler tous les transferts en cours et en attente ?"),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
-            self.transfers.cancel_all()
+        self.transfers.confirm_cancel_all()
 
     def update_speed_limit(self, value):
         # The queue's shared limiter applies the value; only persist it here.
@@ -446,7 +444,7 @@ class WorkspaceFeatures:
                 self.tr("Cette commande peut modifier ou supprimer des données. L’exécuter ?"),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
                 return
-        self.activity_tabs.setCurrentWidget(self.logs)
+        self.activity_tabs.setCurrentWidget(self.log_panel)
         self.command_requested.emit(command.strip())
 
     def show_about(self):

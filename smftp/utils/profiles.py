@@ -5,7 +5,7 @@ import json
 import re
 from pathlib import Path
 import xml.etree.ElementTree as ET
-from smftp.models.entries import Connection, DEFAULT_PORTS
+from smftp.models.entries import Connection, DEFAULT_PORTS, normalize_encoding
 
 def normalize_profile(site: dict) -> dict:
     if not isinstance(site, dict):
@@ -25,7 +25,9 @@ def normalize_profile(site: dict) -> dict:
                 group=str(site.get("group", "")).strip(),
                 local_directory=str(site.get("local_directory", "")),
                 remote_directory=str(site.get("remote_directory", "")),
-                timeout=max(5, min(300, int(site.get("timeout", 20)))))
+                timeout=max(5, min(300, int(site.get("timeout", 20)))),
+                passive=site.get("passive", True) not in (False, "false", "0", 0),
+                encoding=normalize_encoding(site.get("encoding", "auto")))
 
 
 def profile_for(connection: Connection) -> dict:
@@ -61,18 +63,27 @@ def restore_credential(key: str, previous) -> None:
         keyring.set_password("SMFTP", key, previous)
 
 
+def filezilla_encoding(server):
+    """SMFTP encoding for a FileZilla server entry; None when the custom one is unknown."""
+    kind = (server.findtext("EncodingType") or "Auto").strip()
+    if kind in ("", "Auto"):
+        return "auto"
+    if kind == "UTF-8":
+        return "utf-8"
+    custom = (server.findtext("CustomEncoding") or "").strip()
+    value = normalize_encoding(custom)
+    return value if value != "auto" else None
+
+
 def ignored_filezilla_options(server) -> list[str]:
     """FileZilla settings that SMFTP profiles do not carry over."""
     ignored = []
-    if (server.findtext("PasvMode") or "").strip() == "MODE_ACTIVE":
-        ignored.append("mode FTP actif (SMFTP utilise le mode passif)")
     offset = (server.findtext("TimezoneOffset") or "0").strip()
     if offset not in ("", "0"):
         ignored.append(f"décalage horaire de {offset} min")
-    encoding = (server.findtext("EncodingType") or "Auto").strip()
-    if encoding not in ("", "Auto", "UTF-8"):
-        custom = (server.findtext("CustomEncoding") or "").strip()
-        ignored.append("encodage " + (custom or encoding))
+    encoding = filezilla_encoding(server)
+    if encoding is None:
+        ignored.append("encodage " + ((server.findtext("CustomEncoding") or "").strip() or "inconnu"))
     connections = (server.findtext("MaximumMultipleConnections") or "0").strip()
     if connections not in ("", "0"):
         ignored.append(f"limite de {connections} connexion(s)")
@@ -206,7 +217,9 @@ def read_profiles(filename: str, *, repair_header: bool = False) -> ImportResult
                 port=server.findtext("Port", str(DEFAULT_PORTS[protocol])),
                 protocol=protocol, name=label, key_file=server.findtext("Keyfile", ""),
                 group=" / ".join(groups), local_directory=server.findtext("LocalDir", ""),
-                remote_directory=remote_directory))
+                remote_directory=remote_directory,
+                passive=(server.findtext("PasvMode") or "").strip() != "MODE_ACTIVE",
+                encoding=filezilla_encoding(server) or "auto"))
         except (ValueError, TypeError):
             result.warnings.append(f"{label} : hôte, utilisateur ou port invalide ; profil ignoré.")
             continue

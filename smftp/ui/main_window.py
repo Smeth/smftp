@@ -125,7 +125,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.logs = QPlainTextEdit()
         self.logs.setReadOnly(True)
         self.logs.document().setMaximumBlockCount(1000)
-        tabs.addTab(self.logs, self.tr("Journal de connexion"))
+        self.log_panel = self.build_log_panel()
+        tabs.addTab(self.log_panel, self.tr("Journal de connexion"))
         self.transfers = Transfers(self)
         self.transfers.concurrency.setValue(self.settings.value("concurrency", 2, type=int))
         self.transfers.verify = self.settings.value("verify_checksum", True, type=bool)
@@ -208,6 +209,48 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.local.refresh()
         if self.online:
             self.remote.refresh()
+
+    def build_log_panel(self):
+        from smftp.ui.icons import icon_button
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(8, 4, 8, 4)
+        bar = QHBoxLayout()
+        bar.setSpacing(2)
+        self.log_copy_button = icon_button("copy", self.tr("Copier le journal"), self.copy_log)
+        self.log_save_button = icon_button("save", self.tr("Enregistrer le journal…"), self.save_log)
+        self.log_clear_button = icon_button("trash", self.tr("Effacer le journal"), self.clear_log)
+        for button in (self.log_copy_button, self.log_save_button, self.log_clear_button):
+            bar.addWidget(button)
+        bar.addStretch()
+        layout.addLayout(bar)
+        layout.addWidget(self.logs)
+        self.logs.document().contentsChanged.connect(self.update_log_actions)
+        self.update_log_actions()
+        return panel
+
+    def update_log_actions(self):
+        has_text = not self.logs.document().isEmpty()
+        for button in (self.log_copy_button, self.log_save_button, self.log_clear_button):
+            button.setEnabled(has_text)
+
+    def copy_log(self):
+        selected = self.logs.textCursor().selectedText().replace(chr(0x2029), chr(10))
+        QApplication.clipboard().setText(selected or self.logs.toPlainText())
+        self.statusBar().showMessage(self.tr("Journal copié dans le presse-papiers."), 3000)
+
+    def save_log(self):
+        from datetime import datetime
+        filename, _ = QFileDialog.getSaveFileName(self, self.tr("Enregistrer le journal"),
+                                                  f"smftp-journal-{datetime.now():%Y%m%d-%H%M%S}.txt", "Texte (*.txt)")
+        if filename:
+            try:
+                Path(filename).write_text(self.logs.toPlainText() + "\n", encoding="utf-8")
+            except OSError:
+                self.on_error(self.tr("Impossible d’enregistrer ce fichier."))
+
+    def clear_log(self):
+        self.logs.clear()
 
     def log(self, message):
         import logging
@@ -304,7 +347,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             self.on_error(self.tr("Suppression incomplète : vérifiez l’accès au coffre-fort et au fichier des profils. Le profil est conservé pour pouvoir réessayer."))
 
     def start_connection(self):
-        self.activity_tabs.setCurrentWidget(self.logs)
+        self.activity_tabs.setCurrentWidget(self.log_panel)
         self.busy = True
         self.connect_button.setEnabled(False)
         self.disconnect_button.setEnabled(False)
@@ -944,7 +987,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         # Full diagnostics arrive in the preceding progress signal.
         self.busy = False
         self.connect_button.setEnabled(True)
-        self.activity_tabs.setCurrentWidget(self.logs)
+        self.activity_tabs.setCurrentWidget(self.log_panel)
         summary = error.summary if isinstance(error, ErrorInfo) else str(error)
         if not isinstance(error, ErrorInfo):
             self.log("Erreur : " + summary)
@@ -965,7 +1008,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                                       getattr(self, "last_secret", "")]))
         summary, details = redact(info.summary, secrets), redact(info.details, secrets)
         self.log(summary + ("\n" + details if details else ""))
-        self.activity_tabs.setCurrentWidget(self.logs)
+        self.activity_tabs.setCurrentWidget(self.log_panel)
         box = QMessageBox(self)
         box.setWindowTitle(self.tr("Opération impossible"))
         box.setIcon(QMessageBox.Icon.Warning)
@@ -984,12 +1027,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
         if answer == QMessageBox.StandardButton.Yes:
             try:
-                import paramiko
-                import base64
-                hosts = paramiko.HostKeys(str(data_dir() / "known_hosts"))
-                key = paramiko.PKey.from_type_string(error.key_type, base64.b64decode(error.key))
-                hosts.add(error.host, error.key_type, key)
-                hosts.save(str(data_dir() / "known_hosts"))
+                from smftp.core.clients import trust_host_key
+                trust_host_key(error, str(data_dir() / "known_hosts"))
                 self.start_connection()
             except Exception:
                 self.on_error(self.tr("Impossible d’enregistrer la clé du serveur."))
@@ -1003,6 +1042,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         name = "dark" if self.dark else "light"
         path = Path(__file__).resolve().parents[2] / "resources" / "themes" / f"{name}.qss"
         self.setStyleSheet(path.read_text(encoding="utf-8"))
+        from smftp.ui.icons import recolor
+        recolor(self, self.dark)
 
     def closeEvent(self, event):
         if not self.closing:

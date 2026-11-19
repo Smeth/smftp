@@ -178,8 +178,11 @@ def test_filezilla_ignored_options_are_reported(tmp_path):
     path.write_text(FILEZILLA, encoding="utf-8")
     result = read_profiles(str(path))
     warning = next(w for w in result.warnings if "non reprises" in w)
-    for expected in ("mode FTP actif", "60 min", "ISO-8859-1", "2 connexion"):
+    for expected in ("60 min", "2 connexion"):
         assert expected in warning
+    assert "actif" not in warning and "ISO-8859-1" not in warning  # Now carried over, not dropped.
+    assert result.profiles[0]["passive"] is False
+    assert result.profiles[0]["encoding"] == "latin-1"
 
 
 def test_import_removes_secrets_when_profiles_cannot_be_finalized(tmp_path, monkeypatch):

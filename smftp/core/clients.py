@@ -107,10 +107,17 @@ class BaseClient(ABC):
                 raise NotADirectoryError(current)
 
 
+# Encoding found by "auto" for a server (connection identity -> codec), so that the
+# transfer connections opened later use the same one as the browsing session.
+detected_encodings = {}
+
+
 class FTPClient(BaseClient):
     tls = False
     implicit = False
     hash_method = None  # None = not detected yet, False = unsupported.
+    auto_encoding = True
+    identity = ""
 
     def connect(self, connection: Connection) -> str:
         self.secrets = (connection.password,)
@@ -121,29 +128,89 @@ class FTPClient(BaseClient):
             self.ftp = (LoggedFTPS(context=ssl.create_default_context())
                         if self.tls else LoggedFTP())
         self.ftp.trace = self.report
+        self.identity = connection.identity
+        self.auto_encoding = connection.encoding == "auto"
+        # Set before connecting: ftplib builds the control-channel reader in connect().
+        self.ftp.encoding = (detected_encodings.get(self.identity, "utf-8") if self.auto_encoding
+                             else connection.encoding)
         self.report(f"Statut : résolution de {connection.host} et connexion TCP au port {connection.port}…")
         self.ftp.connect(connection.host, connection.port, timeout=connection.timeout)
         self.report("Statut : serveur FTP joignable ; authentification en cours…")
         self.ftp.login(connection.user, connection.password)
         self.report("Statut : authentification FTP réussie.")
+        self.ftp.set_pasv(connection.passive)
+        self.report("Statut : mode de transfert " + ("passif (PASV)." if connection.passive else
+                    "actif (PORT) : le serveur se connecte à votre poste pour chaque transfert."))
         if self.tls:
             self.ftp.prot_p()
             self.report("Statut : chiffrement TLS du canal de données activé.")
+        if self.auto_encoding and self.ftp.encoding == "utf-8":
+            try:
+                features = self.ftp.sendcmd("FEAT").upper().split()
+                if "UTF8" in features:
+                    self.ftp.sendcmd("OPTS UTF8 ON")
+            except ftplib.all_errors:
+                pass
+        self.report(f"Statut : encodage des noms de fichiers : {self.ftp.encoding}"
+                    + (" (automatique)." if self.auto_encoding else "."))
         self.report("Statut : lecture du dossier de départ…")
         return self.ftp.pwd()
+
+    def set_encoding(self, encoding: str) -> None:
+        """Switch the session's name encoding, control channel included."""
+        self.ftp.encoding = encoding
+        self.ftp.file = self.ftp.sock.makefile("r", encoding=encoding)
+        detected_encodings[self.identity] = encoding
+
+    def read_lines(self, command: str) -> list[str]:
+        """Run a listing command and decode it here, not in ftplib, so that a name in
+        another encoding never leaves the control channel out of step."""
+        self.ftp.sendcmd("TYPE A")
+        chunks = []
+        with self.ftp.transfercmd(command) as conn:
+            while True:
+                data = conn.recv(65536)
+                if not data:
+                    break
+                chunks.append(data)
+            if isinstance(conn, ssl.SSLSocket):
+                conn.unwrap()
+        self.ftp.voidresp()
+        raw = b"".join(chunks)
+        try:
+            text = raw.decode(self.ftp.encoding)
+        except UnicodeDecodeError:
+            if self.auto_encoding and self.ftp.encoding == "utf-8":
+                # Latin-1 maps every byte to one character and back: paths stay exact.
+                self.set_encoding("latin-1")
+                self.report("Statut : noms de fichiers non UTF-8 ; passage automatique en ISO-8859-1 (Latin-1). "
+                            "Choisissez l’encodage exact dans le profil si des accents restent incorrects.")
+                text = raw.decode("latin-1")
+            else:
+                self.report(f"Avertissement : certains noms ne sont pas valides en {self.ftp.encoding} ; "
+                            "ils sont affichés avec « � » et ne pourront pas être ouverts. Changez l’encodage du profil.")
+                text = raw.decode(self.ftp.encoding, errors="replace")
+        return [line.rstrip("\r") for line in text.split("\n") if line.strip()]
 
     def listdir(self, path: str) -> list[Entry]:
         entries = []
         try:
-            rows = list(self.ftp.mlsd(path))
+            lines = self.read_lines(f"MLSD {path}" if path else "MLSD")
         except ftplib.error_perm as error:
             if str(error)[:3] not in ("500", "501", "502", "504"):
                 raise
             from smftp.core.listing import parse_list_line
             self.report("Statut : MLSD indisponible ; lecture de la liste avec LIST.")
-            lines = []
-            self.ftp.retrlines(f"LIST {path}", lines.append)
+            lines = self.read_lines(f"LIST {path}")
             return [entry for line in lines if (entry := parse_list_line(line)) is not None and entry.name not in (".", "..")]
+        rows = []
+        for line in lines:
+            found, _, name = line.partition(" ")
+            facts = {}
+            for fact in found[:-1].split(";"):
+                key, _, value = fact.partition("=")
+                facts[key.lower()] = value
+            rows.append((name, facts))
         for name, facts in rows:
             if facts.get("type") in ("cdir", "pdir"):
                 continue
@@ -264,6 +331,15 @@ class ImplicitFTPSClient(FTPClient):
     """FTPS where TLS starts with the TCP connection (usually port 990)."""
     tls = True
     implicit = True
+
+
+def trust_host_key(error: UnknownHostError, known_hosts: str) -> None:
+    """Record a server key the user has just accepted."""
+    import paramiko
+    hosts = paramiko.HostKeys(known_hosts)
+    key = paramiko.PKey.from_type_string(error.key_type, base64.b64decode(error.key))
+    hosts.add(error.host, error.key_type, key)
+    hosts.save(known_hosts)
 
 
 def make_client(protocol: str, known_hosts: str, reporter=None) -> BaseClient:

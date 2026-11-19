@@ -38,3 +38,19 @@ QPushButton#navigation:hover { background: #345584; border-color: #91b7ff; }
 QPushButton#navigation:pressed { background: #41689e; }
 QPushButton#navigation:focus { border: 2px solid #91b7ff; }
 QPushButton#navigation:disabled { background: #1c222d; color: #566176; border-color: #293242; }
+/* Icon-only actions (transfers, journal): disabled state is visible at a glance. */
+QToolButton#iconAction { background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 0px; }
+QToolButton#iconAction:hover { background: #263e63; border-color: #537db6; }
+QToolButton#iconAction:pressed { background: #345584; }
+QToolButton#iconAction:focus { border: 1px solid #91b7ff; }
+QToolButton#iconAction:disabled { background: transparent; border-color: transparent; }
+QFrame#toolSeparator { color: #303b4d; margin: 0px 6px; }
+/* Connection dialog: required fields, errors and the clear-text FTP warning. */
+QLabel#dialogTitle { font-size: 16px; font-weight: 600; color: #f4f7fd; }
+QLabel#error { color: #ff8a8a; }
+QLabel#warning { color: #f3c26b; }
+QLineEdit[invalid="true"] { border: 1px solid #e06c6c; }
+QPushButton#primary:disabled { background: #2a3a58; border-color: #2a3a58; color: #7d8aa1; }
+QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #6681a6; border-radius: 4px; background: #10151e; }
+QCheckBox::indicator:checked { background: #5788f3; border-color: #5788f3; }
+QLabel#success { color: #6fd39b; }

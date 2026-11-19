@@ -75,7 +75,7 @@ def test_gui_receives_progress_while_connection_worker_is_busy(monkeypatch):
     timer.stop()
     try:
         assert observed == [True]
-        assert window.activity_tabs.currentWidget() is window.logs
+        assert window.activity_tabs.currentWidget() is window.log_panel
         from smftp.core.errors import ErrorInfo
         window.on_session_error(ErrorInfo("Connexion refusée", "cause"))
         assert "Connexion refusée" in window.statusBar().currentMessage()

@@ -1,10 +1,11 @@
 """Transfer queue and controls."""
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTreeWidget,
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, QFrame,
                                QTreeWidgetItem, QProgressBar, QTabWidget, QMessageBox,
-                               QSpinBox, QLabel)
+                               QSpinBox, QLabel, QAbstractItemView)
 from PySide6.QtCore import Signal
 from smftp.workers.transfer import TransferWorker, RateLimiter
 from smftp.ui.explorer import size_label
+from smftp.ui.icons import icon_button, set_icon
 
 
 class Transfers(QWidget):
@@ -28,10 +29,21 @@ class Transfers(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
         bar = QHBoxLayout()
-        for label, callback in [("Pause / Reprendre", self.pause), ("Annuler", self.cancel), ("Relancer", self.retry)]:
-            button = QPushButton(self.tr(label))
-            button.clicked.connect(callback)
-            bar.addWidget(button)
+        bar.setSpacing(2)
+        # Selection actions, then whole-queue actions. Each is enabled only when it can act.
+        self.pause_button = icon_button("pause", self.tr("Mettre en pause / reprendre la sélection"), self.pause)
+        self.cancel_button = icon_button("cancel", self.tr("Annuler la sélection"), self.cancel)
+        self.retry_button = icon_button("retry", self.tr("Relancer la sélection"), self.retry)
+        self.pause_all_button = icon_button("pause_play", self.tr("Tout mettre en pause"), self.toggle_all)
+        self.stop_all_button = icon_button("stop", self.tr("Annuler tous les transferts"), self.confirm_cancel_all)
+        self.clear_button = icon_button("trash", self.tr("Effacer la liste"), self.clear_current)
+        for widget in (self.pause_button, self.cancel_button, self.retry_button):
+            bar.addWidget(widget)
+        bar.addWidget(self._separator())
+        bar.addWidget(self.pause_all_button)
+        bar.addWidget(self.stop_all_button)
+        bar.addWidget(self._separator())
+        bar.addWidget(self.clear_button)
         bar.addStretch()
         bar.addWidget(QLabel(self.tr("Simultanés")))
         self.concurrency = QSpinBox()
@@ -54,9 +66,78 @@ class Transfers(QWidget):
             table.setHeaderLabels(["Fichier", "Direction", "Progression", "Vitesse", "Restant", "Statut"])
             table.setColumnWidth(0, 240)
             table.setColumnWidth(2, 180)
+            table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+            table.itemSelectionChanged.connect(self.update_actions)
             self.tabs.addTab(table, self.tr(title))
             self.tables.append(table)
+        self.tab_titles = ["En cours", "Échoués", "Terminés"]
+        self.tabs.currentChanged.connect(self.update_actions)
         layout.addWidget(self.tabs)
+        self.update_actions()
+
+    @staticmethod
+    def _separator():
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.VLine)
+        line.setObjectName("toolSeparator")
+        line.setFixedHeight(22)
+        return line
+
+    def update_actions(self, *_):
+        """Enable each control only when it has something to act on."""
+        if not hasattr(self, "clear_button"):
+            return
+        selected = self.selected_records()
+        live = ("pending", "paused_pending", "active")
+        movable = [r for r in selected if r["state"] in live]
+        held = movable and all(r["state"] == "paused_pending" or
+                               (r["state"] == "active" and not r["worker"].running.is_set()) for r in movable)
+        set_icon(self.pause_button, "play" if held else "pause")
+        tip = self.tr("Reprendre la sélection") if held else self.tr("Mettre en pause la sélection")
+        self.pause_button.setToolTip(tip)
+        self.pause_button.setAccessibleName(tip)
+        self.pause_button.setEnabled(bool(movable))
+        self.cancel_button.setEnabled(any(r["state"] in live for r in selected))
+        self.retry_button.setEnabled(any(r["state"] in ("Échoué", "Annulé") and not r["worker"].isRunning()
+                                         for r in selected))
+        queued = any(r["state"] in live for r in self.records)
+        resumable = any(r["state"] == "paused_pending" and not r["restored"] for r in self.records)
+        resume = self.paused or (resumable and not any(r["state"] in ("pending", "active") for r in self.records))
+        set_icon(self.pause_all_button, "play" if resume else "pause_play")
+        tip = self.tr("Tout reprendre") if resume else self.tr("Tout mettre en pause")
+        self.pause_all_button.setToolTip(tip)
+        self.pause_all_button.setAccessibleName(tip)
+        self.pause_all_button.setEnabled(queued)
+        self.stop_all_button.setEnabled(queued)
+        index = self.tabs.currentIndex()
+        self.clear_button.setEnabled(index in (1, 2) and self.tables[index].topLevelItemCount() > 0)
+        tip = {1: self.tr("Effacer les tâches échouées ou annulées…"),
+               2: self.tr("Effacer les tâches terminées")}.get(index, self.tr("Effacer la liste"))
+        self.clear_button.setToolTip(tip)
+        self.clear_button.setAccessibleName(tip)
+        for i, title in enumerate(self.tab_titles):
+            count = self.tables[i].topLevelItemCount()
+            self.tabs.setTabText(i, self.tr(title) + (f"  ({count})" if count else ""))
+
+    def toggle_all(self):
+        if self.pause_all_button.property("iconName") == "play":
+            self.resume_all()
+        else:
+            self.pause_all()
+
+    def confirm_cancel_all(self):
+        if QMessageBox.question(self, self.tr("Annuler les transferts"),
+                                self.tr("Annuler tous les transferts en cours et en attente ?"),
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
+            self.cancel_all()
+
+    def clear_current(self):
+        index = self.tabs.currentIndex()
+        if index == 1:
+            self.clear_failed()
+        elif index == 2:
+            self.clear_finished()
 
     def set_limit(self, value):
         self.limit = value
@@ -137,6 +218,7 @@ class Transfers(QWidget):
                 r["item"].setText(5, "En pause")
         self.persist()
         self.speed_changed.emit(0)
+        self.update_actions()
 
     def resume_all(self):
         self.paused = False
@@ -156,12 +238,14 @@ class Transfers(QWidget):
                 if r["state"] != "active":
                     self.done(r, "Annulé")
         self.paused = False
+        self.update_actions()
 
     def clear_finished(self):
         """Remove successful jobs only; failed jobs keep their retry data."""
         self.tables[2].clear()
         self.records = [r for r in self.records if r["state"] != "Terminé" or r["worker"].isRunning()]
         self.persist()
+        self.update_actions()
 
     def clear_failed(self):
         """Explicitly discard failed and cancelled jobs, including their retry data."""
@@ -171,6 +255,7 @@ class Transfers(QWidget):
         removed = [r for r in self.records if r["state"] in ("Échoué", "Annulé", "Relancé") and not r["worker"].isRunning()]
         self.records = [r for r in self.records if not any(r is x for x in removed)]
         self.persist()
+        self.update_actions()
         self.discarded.emit([r["task"] for r in removed])
 
     def report_failure(self, record, error):
@@ -178,7 +263,10 @@ class Transfers(QWidget):
         self.diagnostic.emit(error)
 
     def schedule(self):
-        if self.stopping or self.paused:
+        if self.stopping:
+            return
+        if self.paused:
+            self.update_actions()
             return
         active = sum(r["worker"].isRunning() for r in self.records)
         for record in self.records:
@@ -189,6 +277,7 @@ class Transfers(QWidget):
                 record["item"].setText(5, "En cours")
                 record["worker"].start()
                 active += 1
+        self.update_actions()
 
     def update_progress(self, record, done, total, speed):
         record["speed"] = speed
@@ -232,6 +321,7 @@ class Transfers(QWidget):
         self.changed.emit()
         self.outcome.emit(record["task"], status)
         self.persist()
+        self.update_actions()
 
     def selected_records(self):
         items = self.tables[self.tabs.currentIndex()].selectedItems()
@@ -260,6 +350,7 @@ class Transfers(QWidget):
             record["worker"].cancel()
             if record["state"] in ("pending", "paused_pending"):
                 self.done(record, "Annulé")
+        self.update_actions()
 
     def retry(self):
         for record in self.selected_records():
@@ -270,6 +361,7 @@ class Transfers(QWidget):
                     record["state"] = "Relancé"
                     # Lets the window move follow-up actions (edit, copy, drag) to the new task.
                     self.retried.emit(record["task"], task)
+        self.update_actions()
 
     def stop_all(self):
         self.persist()

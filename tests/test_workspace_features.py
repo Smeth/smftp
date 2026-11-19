@@ -46,6 +46,8 @@ def test_key_picker_and_profile_paths(tmp_path, monkeypatch):
     path = tmp_path / "id_ed25519"
     path.write_text("test-key")
     dialog = ConnectionDialog()
+    assert not dialog.key_picker.isEnabled()  # FTP by default: SSH keys do not apply.
+    dialog.set_protocol("SFTP")
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *args: (str(path), ""))
     dialog.key_picker.click()
     assert dialog.key.text() == str(path)
@@ -108,13 +110,12 @@ def test_legacy_list_parsing():
 
 def test_ftp_list_fallback(monkeypatch):
     import ftplib
-    class Legacy:
-        def mlsd(self, path):
+    def read_lines(command):
+        if command.startswith("MLSD"):
             raise ftplib.error_perm("502 MLSD unavailable")
-        def retrlines(self, command, callback):
-            callback("-rw-r--r-- 1 user group 123 Jan 02 2025 file.txt")
+        return ["-rw-r--r-- 1 user group 123 Jan 02 2025 file.txt"]
     client = FTPClient()
-    client.ftp = Legacy()
+    client.read_lines = read_lines
     assert client.listdir("/")[0].name == "file.txt"
 
 

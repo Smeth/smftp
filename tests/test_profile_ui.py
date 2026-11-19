@@ -16,10 +16,11 @@ def test_connection_dialog_loads_vault_and_saves_without_connecting(monkeypatch)
     assert dialog.password.text() == "remembered-secret"
     assert dialog.remember.isChecked()
     assert dialog.password.echoMode() == QLineEdit.EchoMode.Password
-    dialog.show_password.click()
+    assert dialog.show_password in dialog.password.actions()  # The eye sits inside the field.
+    dialog.show_password.trigger()
     assert dialog.password.echoMode() == QLineEdit.EchoMode.Normal
-    assert dialog.show_password.text() == "Masquer"
-    dialog.show_password.click()
+    assert dialog.show_password.text() == "Masquer le mot de passe"
+    dialog.show_password.trigger()
     assert dialog.password.echoMode() == QLineEdit.EchoMode.Password
     assert dialog.save_button.isEnabled()
     dialog.accept_save_only()
