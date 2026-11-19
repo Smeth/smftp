@@ -139,6 +139,9 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.transfers.activity.connect(self.log)
         self.transfers.speed_changed.connect(self.update_speed)
         tabs.addTab(self.transfers, self.tr("Transferts"))
+        from smftp.ui.assistant import AssistantPanel
+        self.assistant_panel = AssistantPanel(self)
+        tabs.addTab(self.assistant_panel, self.tr("Assistant IA"))
         tabs.setCurrentIndex(0)
         main.addWidget(tabs)
         main.setSizes([580, 150])
@@ -712,7 +715,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
     def sync_running(self):
         scheduled = getattr(self, "scheduler", None)
         return (any(w.isRunning() for w in (getattr(self, "sync_worker", None), getattr(self, "sync_deleter", None)) if w)
-                or bool(scheduled and scheduled.planning()))
+                or bool(scheduled and scheduled.planning())
+                or bool(getattr(self, "assistant_panel", None) and self.assistant_panel.busy()))
 
     def synchronize(self):
         from smftp.workers.sync import SyncPlanner
@@ -1078,6 +1082,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                 self.hide()
                 self.transfers.stop_all()
                 self.scheduler.stop()
+                self.assistant_panel.stop()
                 for worker in self.search_workers:
                     worker.requestInterruption()
                 for worker in (getattr(self, "sync_worker", None), getattr(self, "sync_deleter", None)):

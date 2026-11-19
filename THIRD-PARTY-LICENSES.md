@@ -15,6 +15,11 @@ SMFTP est distribué sous la [PolyForm Noncommercial License 1.0.0](LICENSE.md).
 | invoke | BSD-2-Clause | Dépendance de paramiko |
 | keyring, jaraco.classes, jaraco.context, jaraco.functools, more-itertools | MIT | Coffre-fort système |
 | pywin32-ctypes | BSD-3-Clause | Coffre-fort Windows |
+| anthropic (SDK Claude) | MIT | Assistant IA |
+| httpx2, idna | BSD-3-Clause | Requêtes HTTPS de l’assistant |
+| h11, anyio, sniffio, pydantic, pydantic-core, annotated-types, typing-inspection, jiter, docstring-parser | MIT (sniffio : MIT ou Apache-2.0) | Dépendances du SDK Claude |
+| opentelemetry-api | Apache-2.0 | Dépendance du SDK Claude |
+| certifi | MPL-2.0 | Certificats racines (utilisé sans modification) |
 | typing_extensions | PSF-2.0 | Compatibilité Python |
 | Python (interpréteur embarqué par PyInstaller) | PSF-2.0 | Exécution |
 | PyInstaller (chargeur de l’exécutable) | GPL-2.0 avec exception pour le chargeur | Construction uniquement |

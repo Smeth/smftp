@@ -76,6 +76,7 @@ class WorkspaceFeatures:
         self.add_command(display, "Effacer le journal", self.clear_log)
         self.add_command(display, "Thème clair / sombre", self.toggle_theme)
         self.add_command(self.tools_menu, "Tâches planifiées…", self.show_schedule, "Ctrl+Shift+P")
+        self.add_command(self.tools_menu, "Assistant IA", self.show_assistant, "Ctrl+Shift+I")
         self.add_command(self.tools_menu, "Commande FTP…", self.ftp_command)
         help_menu = self.menuBar().addMenu(self.tr("Aide"))
         self.add_command(help_menu, "Documentation et raccourcis", self.show_help, "F1")
@@ -234,6 +235,10 @@ class WorkspaceFeatures:
         if self.online and self.connection:
             defaults.update(profile=self.connection.identity, remote=self.remote.path)
         return defaults
+
+    def show_assistant(self):
+        self.activity_tabs.setCurrentWidget(self.assistant_panel)
+        self.assistant_panel.input.setFocus()
 
     def show_schedule(self):
         from smftp.ui.scheduler import ScheduleDialog
