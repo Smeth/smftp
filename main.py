@@ -33,6 +33,15 @@ def main() -> None:
         from PySide6.QtCore import QTimer
         def finish_smoke() -> None:
             window.grab().save("preview-packaged.png")
+            try:
+                # The assistant imports the SDK lazily: check here that the package is bundled.
+                import anthropic
+                anthropic.Anthropic(api_key="smoke-test").beta.messages
+            except Exception as error:
+                print(f"Smoke test: SDK Claude indisponible ({error!r})", file=sys.stderr)
+                window.close()
+                app.exit(3)
+                return
             window.close()
         QTimer.singleShot(700, finish_smoke)
     sys.exit(app.exec())
