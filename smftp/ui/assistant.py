@@ -6,7 +6,8 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot, QTimer, QSize
 from PySide6.QtWidgets import (QWidget, QFrame, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QLineEdit, QPushButton,
                                QToolButton, QPlainTextEdit, QScrollArea, QSizePolicy, QMessageBox, QDialog,
-                               QDialogButtonBox, QRadioButton, QButtonGroup, QStackedWidget, QComboBox)
+                               QDialogButtonBox, QRadioButton, QButtonGroup, QStackedWidget, QComboBox,
+                               QCheckBox, QMenu)
 from smftp.core import assistant as A
 from smftp.core import schedule as S
 from smftp.ui.icons import icon_button, make_icon, recolor, theme_of
@@ -271,6 +272,7 @@ class Toolbox(QObject):
 
 class AssistantWorker(QThread):
     tool_started = Signal(str)
+    text_delta = Signal(str)  # Answer text as it arrives (Claude).
     progress = Signal(int)  # Characters produced so far (local models).
     done = Signal(object)  # TurnResult
     failed = Signal(str, bool)  # message, the provider settings need attention
@@ -282,6 +284,8 @@ class AssistantWorker(QThread):
     def run(self):
         if hasattr(self.conversation, "on_progress"):
             self.conversation.on_progress = self.progress.emit
+        if hasattr(self.conversation, "on_text"):
+            self.conversation.on_text = self.text_delta.emit
         try:
             result = self.conversation.send(self.text, self.context,
                                             on_tool=lambda name, _input: self.tool_started.emit(name),
@@ -322,6 +326,8 @@ def provider_settings(settings):
         "ollama_url": settings.value("assistant_ollama_url", A.OLLAMA_URL),
         "ollama_model": settings.value("assistant_ollama_model", ""),
         "ollama_thinking": settings.value("assistant_ollama_thinking", False, type=bool),
+        "effort": settings.value("assistant_effort", A.EFFORT),
+        "fast": settings.value("assistant_fast", False, type=bool),
     }
 
 
@@ -329,7 +335,10 @@ def provider_label(config):
     if config["provider"] == "ollama":
         where = "local" if A.is_local_url(config["ollama_url"]) else "serveur distant"
         return f"Ollama · {config['ollama_model'] or 'aucun modèle'} · {where}"
-    return A.CLAUDE_MODELS.get(config["claude_model"], config["claude_model"]).split(" — ")[0]
+    label = A.CLAUDE_MODELS.get(config["claude_model"], config["claude_model"]).split(" — ")[0]
+    if config["fast"] and config["claude_model"] in A.FAST_MODELS:
+        label += " · rapide"
+    return label
 
 
 class ModelLister(QThread):
@@ -379,6 +388,18 @@ class AssistantSettings(QDialog):
             self.claude_model.addItem(label, value)
         self.claude_model.setCurrentIndex(max(0, self.claude_model.findData(config["claude_model"])))
         form.addRow(self.tr("Modèle"), self.claude_model)
+        self.effort = QComboBox()
+        for value, label in A.EFFORTS.items():
+            self.effort.addItem(self.tr(label), value)
+        self.effort.setCurrentIndex(max(0, self.effort.findData(config["effort"])))
+        form.addRow(self.tr("Réflexion"), self.effort)
+        self.fast = QCheckBox(self.tr("Mode rapide : réponses jusqu’à 2,5 fois plus vite, facturées 2 fois plus cher "
+                                      "(Opus 5.5 uniquement)"))
+        self.fast.setChecked(config["fast"])
+        form.addRow("", self.fast)
+        self.claude_model.currentIndexChanged.connect(
+            lambda _: self.fast.setEnabled(self.claude_model.currentData() in A.FAST_MODELS))
+        self.fast.setEnabled(self.claude_model.currentData() in A.FAST_MODELS)
         self.api_key = QLineEdit(read_api_key() or "")
         self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.api_key.setPlaceholderText(self.tr("sk-ant-…"))
@@ -501,6 +522,8 @@ class AssistantSettings(QDialog):
         else:
             self.settings.setValue("assistant_provider", "claude")
             self.settings.setValue("assistant_claude_model", self.claude_model.currentData())
+            self.settings.setValue("assistant_effort", self.effort.currentData())
+            self.settings.setValue("assistant_fast", self.fast.isChecked())
             try:
                 store_api_key(self.api_key.text().strip())
             except Exception:
@@ -651,9 +674,9 @@ class AssistantPanel(QFrame):
         titles.addWidget(title)
         self.provider = QPushButton()
         self.provider.setObjectName("providerChip")
-        self.provider.setToolTip(self.tr("Changer de modèle ou de fournisseur"))
+        self.provider.setToolTip(self.tr("Changer de modèle"))
         self.provider.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.provider.clicked.connect(self.open_settings)
+        self.provider.clicked.connect(self.show_model_menu)
         titles.addWidget(self.provider, 0, Qt.AlignmentFlag.AlignLeft)
         top.addLayout(titles, 1)
         self.reset_button = icon_button("edit", self.tr("Nouvelle conversation"), self.reset)
@@ -817,6 +840,50 @@ class AssistantPanel(QFrame):
         self.settings_button.setEnabled(not running)
         self.provider.setEnabled(not running)
 
+    def model_menu(self):
+        """Every model one click away: Claude models, the local model, then the settings."""
+        config = self.config()
+        menu = QMenu(self)
+        title = menu.addAction(self.tr("Claude (en ligne)"))
+        title.setEnabled(False)
+        for value, label in A.CLAUDE_MODELS.items():
+            name, _, detail = label.partition(" — ")
+            action = menu.addAction(f"{name}  —  {detail}")
+            action.setCheckable(True)
+            action.setChecked(config["provider"] == "claude" and config["claude_model"] == value)
+            action.triggered.connect(lambda checked=False, v=value: self.choose_model("claude", v))
+        menu.addSeparator()
+        title = menu.addAction(self.tr("Ollama (sur ce PC)"))
+        title.setEnabled(False)
+        if config["ollama_model"]:
+            action = menu.addAction(config["ollama_model"])
+            action.setCheckable(True)
+            action.setChecked(config["provider"] == "ollama")
+            action.triggered.connect(lambda checked=False: self.choose_model("ollama", config["ollama_model"]))
+        menu.addAction(self.tr("Choisir un modèle local…")).triggered.connect(self.open_settings)
+        menu.addSeparator()
+        menu.addAction(self.tr("Réglages de l’assistant…")).triggered.connect(self.open_settings)
+        return menu
+
+    def show_model_menu(self):
+        if not self.busy():
+            self.model_menu().exec(self.provider.mapToGlobal(self.provider.rect().bottomLeft()))
+
+    def choose_model(self, provider, model):
+        settings = self.window.settings
+        previous = self.config()
+        settings.setValue("assistant_provider", provider)
+        settings.setValue("assistant_claude_model" if provider == "claude" else "assistant_ollama_model", model)
+        if provider == "claude" and previous["provider"] == "claude" and isinstance(self.conversation, A.ClaudeConversation):
+            # Same provider: the conversation continues on the new model.
+            self.conversation.model = model
+        elif provider != previous["provider"]:
+            # The history format differs between providers: start afresh.
+            self.conversation = None
+            self.clear_messages()
+        self.refresh_provider()
+        self.update_buttons()
+
     def open_settings(self):
         if self.busy():
             return
@@ -873,7 +940,8 @@ class AssistantPanel(QFrame):
                 if not key or self.config()["provider"] != "claude":
                     return None
             client = anthropic.Anthropic(api_key=key, timeout=120.0, max_retries=2)
-        return A.ClaudeConversation(client, self.toolbox.execute, model=config["claude_model"])
+        return A.ClaudeConversation(client, self.toolbox.execute, model=config["claude_model"],
+                                    effort=config["effort"], fast=config["fast"])
 
     def context(self):
         now = datetime.now()
@@ -913,6 +981,9 @@ class AssistantPanel(QFrame):
         self.worker = AssistantWorker(self.conversation, text, self.context(), self)
         self.worker.tool_started.connect(self.on_tool)
         self.worker.progress.connect(self.on_progress)
+        self.worker.text_delta.connect(self.on_text)
+        self.stream_bubble = None
+        self.stream_text = ""
         self.worker.done.connect(self.on_done)
         self.worker.failed.connect(self.on_failed)
         self.worker.finished.connect(self.on_finished)
@@ -923,13 +994,55 @@ class AssistantPanel(QFrame):
         if self.steps is not None:
             self.steps.set_progress(characters)
 
+    stream_bubble = None
+    stream_text = ""
+
+    def on_text(self, piece):
+        if self.stream_bubble is None:
+            # The answer starts: the "thinking" line gives way to the text itself.
+            if self.steps is not None:
+                self.steps.finish()
+                self.steps = None
+            self.stream_text = ""
+            self.stream_bubble = self.append("assistant", "")
+            self.flush_timer = QTimer(self)
+            self.flush_timer.setSingleShot(True)
+            self.flush_timer.timeout.connect(self.flush_stream)
+        self.stream_text += piece
+        if not self.flush_timer.isActive():
+            self.flush_timer.start(60)  # Redraw a few times per second, not per word.
+
+    def flush_stream(self):
+        if self.stream_bubble is not None:
+            self.stream_bubble.label.setText(self.stream_text)
+
+    def end_stream(self):
+        if self.stream_bubble is not None:
+            self.flush_timer.stop()
+            self.flush_stream()
+            if not self.stream_text.strip():
+                self.stream_bubble.parentWidget().hide()
+        self.stream_bubble = None
+
     def on_tool(self, name):
-        if self.steps is not None:
-            self.steps.add(self.tr(TOOL_LABELS.get(name, name)).capitalize())
+        if self.stream_bubble is not None:
+            # Text before a tool call stays as its own message; steps follow it.
+            self.end_stream()
+        if self.steps is None:
+            self.steps = Steps()
+            self.add_widget(self.steps, "left")
+        self.steps.add(self.tr(TOOL_LABELS.get(name, name)).capitalize())
 
     def on_done(self, result):
-        if result.text:
+        if self.stream_bubble is not None and result.text:
+            # The final answer was streamed: show the complete text once more (full Markdown).
+            self.stream_text = result.text
+            self.end_stream()
+        elif result.text:
+            self.end_stream()
             self.append("assistant", result.text)
+        else:
+            self.end_stream()
         notes = {"refusal": "L’assistant a refusé cette demande. Reformulez-la.",
                  "max_tokens": "Réponse interrompue : elle était trop longue.",
                  "rounds": "L’assistant s’est arrêté après trop d’étapes. Précisez la demande.",
@@ -940,6 +1053,7 @@ class AssistantPanel(QFrame):
             self.append("note", self.tr("Aucune réponse du modèle. Reformulez ou essayez un autre modèle."))
 
     def on_failed(self, message, settings_issue):
+        self.end_stream()
         self.append("error", message)
         if settings_issue:
             self.conversation = None

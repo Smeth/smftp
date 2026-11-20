@@ -8,8 +8,12 @@ in SMFTP before it runs; the confirmation is done by the tool executor, not here
 from dataclasses import dataclass, field
 
 MODEL = "claude-opus-5-5"
-MAX_TOKENS = 16000
-EFFORT = "medium"  # Multi-step tool use; Opus 5.5 defaults to medium, set explicitly.
+MAX_TOKENS = 64000  # Streamed, so a large ceiling is safe from HTTP timeouts.
+EFFORT = "low"  # Chat-style requests; the user can raise it in the settings.
+EFFORTS = {"low": "Rapide — réponses plus courtes et plus vives (recommandé)",
+           "medium": "Équilibrée — réfléchit davantage aux demandes en plusieurs étapes",
+           "high": "Approfondie — la plus soignée, nettement plus lente"}
+FAST_MODELS = {"claude-opus-5-5"}  # Fast mode (speed "fast"): up to 2.5x faster output, billed 2x.
 MAX_ROUNDS = 12  # Tool round-trips per user message.
 BETAS = ["server-side-fallback-2026-07-01"]
 NO_FALLBACK = {"claude-haiku-5-5"}  # No server-side refusal fallback on this model.
@@ -167,6 +171,10 @@ class ProviderError(Exception):
     """A provider failure explained in words for the user."""
 
 
+class Cancelled(Exception):
+    """The user pressed Stop while a reply was arriving."""
+
+
 def run_tool(execute, name, data, cancelled):
     if cancelled():
         return "Annulé par l’utilisateur.", True
@@ -203,19 +211,92 @@ class BaseConversation:
         raise NotImplementedError
 
 
-class ClaudeConversation(BaseConversation):
-    """Claude through the Anthropic SDK (``client`` is an ``anthropic.Anthropic``)."""
+def validate_input(name: str, data) -> str | None:
+    """Check a tool input against its schema (streamed inputs are not validated by the
+    API). Returns a message, or None when the input is usable."""
+    tool = next((t for t in TOOLS if t["name"] == name), None)
+    if tool is None:
+        return f"Outil inconnu : {name}"
+    if not isinstance(data, dict):
+        return "Entrée d’outil illisible."
+    schema = tool["input_schema"]
+    kinds = {"string": str, "boolean": bool, "integer": int, "array": list}
+    for key in schema["required"]:
+        if key not in data:
+            return f"Paramètre manquant : {key}"
+    for key, value in data.items():
+        spec = schema["properties"].get(key)
+        if spec is None:
+            return f"Paramètre inconnu : {key}"
+        expected = kinds.get(spec.get("type"))
+        if expected and (not isinstance(value, expected) or (expected is int and isinstance(value, bool))):
+            return f"Type invalide pour {key}"
+        if "enum" in spec and value not in spec["enum"]:
+            return f"Valeur invalide pour {key} : {value}"
+        if expected is list and "enum" in spec.get("items", {}):
+            if any(item not in spec["items"]["enum"] for item in value):
+                return f"Valeur invalide dans {key}"
+    return None
 
-    def __init__(self, client, execute, *, model=MODEL):
+
+class ClaudeConversation(BaseConversation):
+    """Claude through the Anthropic SDK (``client`` is an ``anthropic.Anthropic``), streamed."""
+
+    on_text = None  # Set by the caller: receives each piece of answer text as it arrives.
+
+    def __init__(self, client, execute, *, model=MODEL, effort=EFFORT, fast=False):
         super().__init__(execute)
         self.client = client
         self.model = model
+        self.effort = effort if effort in EFFORTS else EFFORT
+        self.fast = fast
+        # Streamed request with client tools: inputs stream as generated; SMFTP validates them.
+        self.tools = [dict(tool, eager_input_streaming=True) for tool in TOOLS]
 
     def request_options(self):
+        options = {}
         # Claude Haiku 5.5 has no server-side fallback: the parameter is left out for it.
-        if self.model in NO_FALLBACK:
-            return {}
-        return {"betas": BETAS, "fallbacks": "default"}
+        if self.model not in NO_FALLBACK:
+            options.update(betas=BETAS, fallbacks="default")
+        if self.fast and self.model in FAST_MODELS:
+            options["speed"] = "fast"
+        return options
+
+    def stream_once(self, options, cancelled):
+        with self.client.beta.messages.stream(
+            model=self.model,
+            max_tokens=MAX_TOKENS,
+            system=SYSTEM_PROMPT,
+            tools=self.tools,
+            messages=self.messages,
+            output_config={"effort": self.effort},
+            cache_control={"type": "ephemeral"},
+            **options,
+        ) as stream:
+            for event in stream:
+                if cancelled():
+                    raise Cancelled()
+                if event.type == "text" and self.on_text:
+                    self.on_text(event.text)
+            return stream.get_final_message()
+
+    def request(self, cancelled):
+        options = self.request_options()
+        attempts = 0
+        while True:
+            try:
+                return self.stream_once(options, cancelled)
+            except ValueError:
+                # Tool input JSON the SDK could not parse at all: no tool_use id to answer, re-issue.
+                attempts += 1
+                if attempts > 2:
+                    raise ProviderError("Claude a renvoyé une demande d’outil illisible. Reformulez.") from None
+            except Exception as error:
+                # Fast mode has its own rate limit: fall back to standard speed once.
+                if options.get("speed") == "fast" and type(error).__name__ == "RateLimitError":
+                    options = {k: v for k, v in options.items() if k != "speed"}
+                    continue
+                raise
 
     def _send(self, text, context, on_tool, cancelled) -> TurnResult:
         content = [{"type": "text", "text": text}]
@@ -229,16 +310,11 @@ class ClaudeConversation(BaseConversation):
                 result.stopped = "cancelled"
                 self.close_pending()
                 return result
-            response = self.client.beta.messages.create(
-                model=self.model,
-                max_tokens=MAX_TOKENS,
-                system=SYSTEM_PROMPT,
-                tools=TOOLS,
-                messages=self.messages,
-                output_config={"effort": EFFORT},
-                cache_control={"type": "ephemeral"},
-                **self.request_options(),
-            )
+            try:
+                response = self.request(cancelled)
+            except Cancelled:
+                result.stopped = "cancelled"
+                return result
             # The whole content goes back unchanged (thinking and fallback blocks included).
             self.messages.append({"role": "assistant", "content": response.content})
             if response.stop_reason == "refusal":
@@ -247,12 +323,23 @@ class ClaudeConversation(BaseConversation):
             if response.stop_reason == "pause_turn":
                 continue
             calls = [block for block in response.content if block.type == "tool_use"]
+            if calls and response.stop_reason == "max_tokens":
+                # A truncated tool input parses as a valid partial object: never run it.
+                result.stopped = "max_tokens"
+                self.close_pending()
+                return result
             if response.stop_reason == "tool_use" and calls:
                 results = []
                 for call in calls:
                     if on_tool:
                         on_tool(call.name, call.input)
-                    output, is_error = run_tool(self.execute, call.name, dict(call.input or {}), cancelled)
+                    problem = validate_input(call.name, call.input)
+                    if problem:
+                        import json
+                        output, is_error = json.dumps({"INVALID_JSON": json.dumps(call.input, ensure_ascii=False),
+                                                       "erreur": problem}, ensure_ascii=False), True
+                    else:
+                        output, is_error = run_tool(self.execute, call.name, dict(call.input), cancelled)
                     result.tool_calls.append((call.name, is_error))
                     results.append({"type": "tool_result", "tool_use_id": call.id,
                                     "content": output, "is_error": bool(is_error)})
@@ -315,10 +402,6 @@ def http_json(url, body=None, timeout=OLLAMA_TIMEOUT):
         raise ProviderError("Le modèle local n’a pas répondu à temps. Essayez un modèle plus petit.") from None
     except ValueError:
         raise ProviderError("Réponse illisible du serveur local : est-ce bien Ollama ?") from None
-
-
-class Cancelled(Exception):
-    pass
 
 
 def http_stream(url, body, on_chunk=None, cancelled=lambda: False, timeout=OLLAMA_TIMEOUT):

@@ -157,7 +157,19 @@ def test_errors_are_explained(ollama):
 def test_claude_haiku_is_sent_without_fallbacks():
     from types import SimpleNamespace as NS
     requests = []
-    client = NS(beta=NS(messages=NS(create=lambda **kw: requests.append(kw) or NS(stop_reason="end_turn", content=[]))))
+    class Stream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def __iter__(self):
+            return iter(())
+
+        def get_final_message(self):
+            return NS(stop_reason="end_turn", content=[])
+    client = NS(beta=NS(messages=NS(stream=lambda **kw: requests.append(kw) or Stream())))
     A.ClaudeConversation(client, lambda *a: ("", False), model="claude-haiku-5-5").send("x")
     A.ClaudeConversation(client, lambda *a: ("", False), model="claude-sonnet-5-5").send("x")
     assert "fallbacks" not in requests[0] and "betas" not in requests[0] and requests[0]["model"] == "claude-haiku-5-5"
@@ -239,6 +251,38 @@ def test_missing_ollama_shows_an_error_bubble(window):
     QApplication.instance().processEvents()
     errors = [b for b in panel.findChildren(Bubble) if b.objectName() == "bubbleError"]
     assert errors and "Ollama" in errors[-1].label.text() and panel.conversation is None
+
+
+def test_model_menu_switches_models_in_one_click(window):
+    panel = window.assistant_panel
+    menu = panel.model_menu()
+    labels = [action.text() for action in menu.actions()]
+    assert any(label.startswith("Claude Sonnet 5.5") for label in labels)
+    sonnet = next(a for a in menu.actions() if a.text().startswith("Claude Sonnet 5.5"))
+    sonnet.trigger()
+    assert window.settings.value("assistant_claude_model") == "claude-sonnet-5-5"
+    assert panel.provider.text().startswith("Claude Sonnet 5.5")
+    checked = [a.text() for a in panel.model_menu().actions() if a.isChecked()]
+    assert len(checked) == 1 and checked[0].startswith("Claude Sonnet 5.5")
+
+
+def test_streamed_answer_fills_one_bubble(window):
+    from types import SimpleNamespace as NS
+    from smftp.ui.assistant import Bubble
+    from test_assistant import FakeClient, reply, text, call
+    panel = window.assistant_panel
+    window.settings.setValue("assistant_consent", True)
+    client = FakeClient(reply(text("Je regarde vos tâches."), call("list_scheduled_tasks", {}), stop="tool_use"),
+                        reply(text("Vous n’avez **aucune** tâche planifiée.")))
+    panel.client_factory = lambda: client
+    panel.input.setText("Mes tâches ?")
+    panel.send()
+    wait_for(lambda: not panel.busy())
+    for _ in range(5):
+        QApplication.instance().processEvents()
+    bubbles = [b for b in panel.findChildren(Bubble) if b.isVisibleTo(panel)]
+    assert [b.label.text().strip() for b in bubbles] == [
+        "Mes tâches ?", "Je regarde vos tâches.", "Vous n’avez **aucune** tâche planifiée."]
 
 
 def test_compact_layout(window):

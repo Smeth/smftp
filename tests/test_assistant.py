@@ -21,21 +21,43 @@ def reply(*blocks, stop="end_turn"):
     return NS(stop_reason=stop, content=list(blocks))
 
 
+class FakeStream:
+    """Like the SDK's message stream: text events word by word, then the final message."""
+
+    def __init__(self, response):
+        self.response = response
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def __iter__(self):
+        for block in self.response.content:
+            if block.type == "text":
+                for word in block.text.split(" "):
+                    yield NS(type="text", text=word + " ")
+
+    def get_final_message(self):
+        return self.response
+
+
 class FakeClient:
-    """Plays scripted responses and records each request."""
+    """Plays scripted responses (streamed) and records each request."""
 
     def __init__(self, *responses):
         self.responses = list(responses)
         self.requests = []
-        self.beta = NS(messages=NS(create=self.create))
+        self.beta = NS(messages=NS(stream=self.stream))
 
-    def create(self, **kwargs):
+    def stream(self, **kwargs):
         # Copy the history as sent: the conversation keeps appending to the same list.
         self.requests.append(dict(kwargs, messages=list(kwargs["messages"])))
         item = self.responses.pop(0)
         if isinstance(item, Exception):
             raise item
-        return item
+        return FakeStream(item)
 
 
 # ---------- core loop ----------
@@ -46,14 +68,60 @@ def test_request_uses_opus_fallbacks_effort_and_strict_tools():
     result = conversation.send("Salut", context="Date : lundi")
     assert result.text == "Bonjour" and not result.stopped
     request = client.requests[0]
-    assert request["model"] == "claude-opus-5-5" and request["max_tokens"] == 16000
+    assert request["model"] == "claude-opus-5-5" and request["max_tokens"] == 64000
     assert request["fallbacks"] == "default" and request["betas"] == ["server-side-fallback-2026-07-01"]
-    assert request["output_config"] == {"effort": "medium"} and "thinking" not in request
+    assert request["output_config"] == {"effort": "low"} and "thinking" not in request and "speed" not in request
     assert request["messages"][0]["content"][0]["text"].startswith("[Contexte SMFTP]")
     for tool in request["tools"]:
         schema = tool["input_schema"]
-        assert tool["strict"] and schema["additionalProperties"] is False
+        assert tool["strict"] and tool["eager_input_streaming"] and schema["additionalProperties"] is False
         assert sorted(schema["required"]) == sorted(schema["properties"])
+
+
+def test_text_streams_and_effort_and_fast_mode_are_sent():
+    client = FakeClient(reply(text("Voici la réponse complète")))
+    pieces = []
+    conversation = A.ClaudeConversation(client, lambda *a: ("", False), effort="high", fast=True)
+    conversation.on_text = pieces.append
+    assert conversation.send("x").text == "Voici la réponse complète"
+    assert "".join(pieces).strip() == "Voici la réponse complète" and len(pieces) == 4
+    assert client.requests[0]["speed"] == "fast" and client.requests[0]["output_config"] == {"effort": "high"}
+    sonnet = A.ClaudeConversation(FakeClient(reply(text("ok"))), lambda *a: ("", False),
+                                  model="claude-sonnet-5-5", fast=True)
+    sonnet.send("x")
+    assert "speed" not in sonnet.client.requests[0]  # Fast mode exists only on Opus 5.5.
+
+
+def test_fast_mode_rate_limit_falls_back_to_standard_speed():
+    class RateLimitError(Exception):
+        pass
+    client = FakeClient(RateLimitError("fast quota"), reply(text("ok")))
+    conversation = A.ClaudeConversation(client, lambda *a: ("", False), fast=True)
+    assert conversation.send("x").text == "ok"
+    assert client.requests[0]["speed"] == "fast" and "speed" not in client.requests[1]
+
+
+def test_invalid_streamed_tool_input_is_not_run():
+    ran = []
+    client = FakeClient(reply(call("read_journal", {"lines": "beaucoup"}, "z"), stop="tool_use"), reply(text("ok")))
+    conversation = A.Conversation(client, lambda name, data: (ran.append(name) or "", False))
+    conversation.send("journal")
+    result = client.requests[1]["messages"][-1]["content"][0]
+    assert not ran and result["is_error"] and "INVALID_JSON" in result["content"]
+    assert A.validate_input("read_journal", {"lines": 50}) is None
+    assert "manquant" in A.validate_input("read_journal", {})
+    assert "invalide" in A.validate_input("create_scheduled_task", dict(
+        {k: "" for k in ("name", "profile", "local", "remote", "time", "at")}, kind="sync",
+        direction="local_vers_distant", directory=False, compare_content=False, conflict="newer",
+        recurrence_type="daily", days=["lundy"], minutes=0, catch_up=True, enabled=True))
+
+
+def test_truncated_tool_call_is_never_run():
+    ran = []
+    client = FakeClient(reply(call("delete_scheduled_task", {"task_id": "a"}), stop="max_tokens"))
+    conversation = A.Conversation(client, lambda name, data: (ran.append(name) or "", False))
+    assert conversation.send("supprime").stopped == "max_tokens" and not ran
+    assert conversation.messages[-1]["role"] == "user"  # History stays valid for the next message.
 
 
 def test_tool_calls_run_and_all_results_return_in_one_message():
