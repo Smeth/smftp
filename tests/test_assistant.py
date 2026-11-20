@@ -2,7 +2,7 @@
 from types import SimpleNamespace as NS
 import time
 import pytest
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox, QLabel
 from smftp.core import assistant as A
 from smftp.core import schedule as S
 from test_clients import ftp_server  # noqa: F401  (fixture)
@@ -100,10 +100,12 @@ def test_cancel_answers_pending_tool_calls():
 
 
 def test_task_from_tool_maps_recurrences():
-    base = dict(name="n", kind="sync", upload=True, local="C:\\a", remote="/b", directory=False,
+    base = dict(name="n", kind="sync", direction="distant_vers_local", local="C:\\a", remote="/b", directory=False,
                 compare_content=False, conflict="newer", catch_up=True, enabled=True, time="", days=[], minutes=0, at="")
-    assert A.task_from_tool(dict(base, recurrence_type="daily", time="23:00", days=[0, 4]))["recurrence"] == \
-        {"type": "daily", "time": "23:00", "days": [0, 4]}
+    task = A.task_from_tool(dict(base, recurrence_type="daily", time="23:00", days=["lundi", "vendredi"]))
+    assert task["recurrence"] == {"type": "daily", "time": "23:00", "days": [0, 4]} and task["upload"] is False
+    # Round trip through the vocabulary the model reads back.
+    assert A.task_from_tool(dict(A.task_to_tool(task), name="n"))["recurrence"] == task["recurrence"]
     assert A.task_from_tool(dict(base, recurrence_type="daily", time="07:00"))["recurrence"]["days"] == list(range(7))
     assert A.task_from_tool(dict(base, recurrence_type="interval", minutes=30))["recurrence"] == {"type": "interval", "minutes": 30}
 
@@ -125,9 +127,10 @@ def window(monkeypatch, tmp_path):
 
 
 def task_input(tmp_path, **changes):
-    data = dict(name="Site chaque soir", profile="Production", kind="sync", upload=True, local=str(tmp_path),
-                remote="/www", directory=False, compare_content=False, conflict="newer", recurrence_type="daily",
-                time="23:00", days=[0, 1, 2, 3, 4], minutes=0, at="", catch_up=True, enabled=True)
+    data = dict(name="Site chaque soir", profile="Production", kind="sync", direction="local_vers_distant",
+                local=str(tmp_path), remote="/www", directory=False, compare_content=False, conflict="newer",
+                recurrence_type="daily", time="23:00", days=["lundi", "mardi", "mercredi", "jeudi", "vendredi"],
+                minutes=0, at="", catch_up=True, enabled=True)
     data.update(changes)
     return data
 
@@ -208,15 +211,18 @@ def test_chat_tab_runs_tools_from_the_worker_thread(window, tmp_path):
     panel.input.setText("Synchronise mon site chaque soir à 23 h")
     assert panel.send_button.isEnabled()
     panel.send()
-    assert panel.busy() and not panel.input.isEnabled()
+    assert panel.busy() and panel.input.isReadOnly() and panel.send_button.toolTip().startswith("Arrêter")
     wait_for(lambda: not panel.busy())
     QApplication.instance().processEvents()
-    transcript = panel.transcript.toPlainText()
-    assert "C’est planifié" in transcript and "propose une nouvelle tâche planifiée" in transcript
+    from smftp.ui.assistant import Bubble
+    texts = [bubble.label.text() for bubble in panel.findChildren(Bubble)]
+    assert texts[0] == "Synchronise mon site chaque soir à 23 h" and "C’est planifié" in texts[-1]
+    steps = [label.text() for label in panel.findChildren(QLabel) if label.text().startswith("✓ ")]
+    assert steps == ["✓ Propose une nouvelle tâche planifiée"]
     assert window.scheduler.store.tasks and window.scheduler.store.tasks[0]["name"] == "Site chaque soir"
     assert "Date et heure locales" in client.requests[0]["messages"][0]["content"][0]["text"]
     panel.reset()
-    assert not panel.conversation.messages and panel.suggestions.isVisibleTo(panel)
+    assert not panel.conversation.messages and panel.empty.isVisibleTo(panel)
 
 
 def test_declined_consent_sends_nothing(window, monkeypatch):

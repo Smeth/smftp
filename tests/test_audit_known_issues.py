@@ -21,6 +21,9 @@ def close_window(window):
     window.thread.finished.connect(loop.quit)
     QTimer.singleShot(2500, loop.quit)
     loop.exec()
+    from PySide6.QtCore import QCoreApplication, QEvent
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 # AUD-001 — corrigé.

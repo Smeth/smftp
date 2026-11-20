@@ -138,10 +138,60 @@ def _edit(p):
     p.drawLine(QPointF(11, 6), QPointF(14, 9))
 
 
+def _star(p, cx, cy, r):
+    path = QPainterPath(QPointF(cx, cy - r))
+    for x, y in ((cx + r * 0.28, cy - r * 0.28), (cx + r, cy), (cx + r * 0.28, cy + r * 0.28), (cx, cy + r),
+                 (cx - r * 0.28, cy + r * 0.28), (cx - r, cy), (cx - r * 0.28, cy - r * 0.28)):
+        path.lineTo(x, y)
+    path.closeSubpath()
+    p.drawPath(path)
+
+
+def _spark(p):
+    p.setPen(Qt.PenStyle.NoPen)
+    _star(p, 8.5, 11, 6.5)
+    _star(p, 15.5, 4.5, 3)
+
+
+def _theme(p):
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawEllipse(QRectF(3.5, 3.5, 13, 13))
+    p.setBrush(p.pen().color())
+    half = QPainterPath(QPointF(10, 3.5))
+    half.arcTo(QRectF(3.5, 3.5, 13, 13), 90, 180)
+    half.closeSubpath()
+    p.drawPath(half)
+
+
+def _send(p):
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawLine(QPointF(10, 16), QPointF(10, 4.5))
+    head = QPainterPath(QPointF(5, 9.5))
+    head.lineTo(10, 4.5)
+    head.lineTo(15, 9.5)
+    p.drawPath(head)
+
+
+def _gear(p):
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    import math
+    for i in range(8):
+        angle = i * math.pi / 4
+        p.drawLine(QPointF(10 + 5.5 * math.cos(angle), 10 + 5.5 * math.sin(angle)),
+                   QPointF(10 + 8 * math.cos(angle), 10 + 8 * math.sin(angle)))
+    p.drawEllipse(QRectF(4.5, 4.5, 11, 11))
+    p.drawEllipse(QRectF(8, 8, 4, 4))
+
+
+def _close(p):
+    p.drawLine(QPointF(5, 5), QPointF(15, 15))
+    p.drawLine(QPointF(15, 5), QPointF(5, 15))
+
+
 SHAPES = {"pause": _pause, "play": _play, "pause_play": _pause_play, "cancel": _cancel,
           "stop": _stop, "retry": _retry, "trash": _trash, "copy": _copy, "save": _save,
           "eye": _eye, "eye_off": _eye_off, "folder": _folder,
-          "edit": _edit}
+          "edit": _edit, "spark": _spark, "theme": _theme, "send": _send, "gear": _gear, "close": _close}
 
 
 def _pixmap(name, color, scale):
@@ -158,8 +208,10 @@ def _pixmap(name, color, scale):
     return pixmap
 
 
-def make_icon(name, dark=True):
+def make_icon(name, dark=True, color=None):
+    """``color`` forces the normal colour (e.g. white on a primary button)."""
     normal, disabled = PALETTES[bool(dark)]
+    normal = color or normal
     icon = QIcon()
     for scale in (1, 2):
         icon.addPixmap(_pixmap(name, normal, scale), QIcon.Mode.Normal)

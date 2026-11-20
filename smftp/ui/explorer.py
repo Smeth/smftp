@@ -119,7 +119,9 @@ class Explorer(QWidget):
         title.addStretch()
         self.count = QLabel(self.tr("Non connecté" if remote else "Votre ordinateur"))
         self.count.setObjectName("muted")
+        self.count.setMinimumHeight(24)  # Same height as the server panel's "Déconnecter" button.
         title.addWidget(self.count)
+        self.title_row = title  # The window adds panel-specific actions here.
         layout.addLayout(title)
         nav = QHBoxLayout()
         self.navigation_buttons = []

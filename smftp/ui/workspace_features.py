@@ -237,8 +237,7 @@ class WorkspaceFeatures:
         return defaults
 
     def show_assistant(self):
-        self.activity_tabs.setCurrentWidget(self.assistant_panel)
-        self.assistant_panel.input.setFocus()
+        self.set_assistant_visible(not self.assistant_panel.isVisible())
 
     def show_schedule(self):
         from smftp.ui.scheduler import ScheduleDialog
