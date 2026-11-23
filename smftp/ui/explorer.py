@@ -143,6 +143,12 @@ class Explorer(QWidget):
         self.address.setPlaceholderText(self.tr("Chemin du dossier"))
         self.address.returnPressed.connect(lambda: self.navigate(self.address.text()))
         nav.addWidget(self.address)
+        if not remote:
+            from smftp.ui.icons import icon_button
+            self.browse_button = icon_button("folder", self.tr("Choisir un dossier dans l’Explorateur Windows…"),
+                                             self.choose_folder)
+            self.browse_button.setFixedSize(40, 40)  # Same size as the navigation arrows.
+            nav.addWidget(self.browse_button)
         layout.addLayout(nav)
         self.crumbs = QHBoxLayout()
         layout.addLayout(self.crumbs)
@@ -244,6 +250,13 @@ class Explorer(QWidget):
             self.view.setCurrentIndex(index)
             self.view.scrollTo(index)
         self.pending_select = None
+
+    def choose_folder(self) -> None:
+        """Local panel only: pick a folder with the system dialog and open it."""
+        from PySide6.QtWidgets import QFileDialog
+        folder = QFileDialog.getExistingDirectory(self, self.tr("Choisir un dossier local"), self.path)
+        if folder:
+            self.navigate(folder)
 
     def navigate(self, path: str) -> None:
         if self.remote:

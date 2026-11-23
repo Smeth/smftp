@@ -1,6 +1,8 @@
 """Persistent user preferences."""
-from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox,
-                               QSpinBox, QDialogButtonBox, QCheckBox)
+from pathlib import Path
+from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox, QFileDialog,
+                               QSpinBox, QDialogButtonBox, QCheckBox, QWidget, QHBoxLayout)
+from smftp.ui.icons import icon_button, recolor, theme_of
 
 
 class SettingsDialog(QDialog):
@@ -20,7 +22,13 @@ class SettingsDialog(QDialog):
                              ("Source plus récente", "newer"), ("Taille différente", "different")]:
             self.conflict.addItem(self.tr(label), value)
         self.conflict.setCurrentIndex(max(0, self.conflict.findData(settings.value("conflict", "ask"))))
-        for title, widget in [("Dossier local au démarrage", self.local), ("Dossier temporaire", self.temp), ("Transferts simultanés", self.count), ("Fichier existant", self.conflict)]:
+        self.local_picker = icon_button("folder", self.tr("Choisir le dossier local au démarrage…"),
+                                        lambda: self.choose_folder(self.local, self.tr("Dossier local au démarrage")))
+        self.temp_picker = icon_button("folder", self.tr("Choisir le dossier temporaire…"),
+                                       lambda: self.choose_folder(self.temp, self.tr("Dossier temporaire")))
+        for title, widget in [("Dossier local au démarrage", self.with_button(self.local, self.local_picker)),
+                              ("Dossier temporaire", self.with_button(self.temp, self.temp_picker)),
+                              ("Transferts simultanés", self.count), ("Fichier existant", self.conflict)]:
             layout.addRow(self.tr(title), widget)
         self.reconnect = QCheckBox(self.tr("Reconnexion automatique après erreur réseau (3 essais maximum)"))
         self.reconnect.setChecked(settings.value("auto_reconnect", False, type=bool))
@@ -37,6 +45,24 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addRow(buttons)
+        recolor(self, theme_of(parent))
+
+    @staticmethod
+    def with_button(field, button):
+        row = QWidget()
+        line = QHBoxLayout(row)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(4)
+        line.addWidget(field)
+        line.addWidget(button)
+        return row
+
+    def choose_folder(self, field, title):
+        """Fill ``field`` from the system folder dialog; cancelling leaves it unchanged."""
+        start = field.text() if field.text() and Path(field.text()).is_dir() else str(Path.home())
+        folder = QFileDialog.getExistingDirectory(self, title, start)
+        if folder:
+            field.setText(str(Path(folder)))
 
     def persist(self, settings):
         settings.setValue("local_directory", self.local.text())
