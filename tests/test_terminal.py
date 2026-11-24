@@ -631,3 +631,24 @@ def test_local_types_are_in_french(tmp_path):
     assert wait_for(lambda: model.rowCount(root) == 3)
     types = {model.fileName(model.index(r, 0, root)): model.index(r, 2, root).data() for r in range(3)}
     assert types == {"dossier": "Dossier", "notes.txt": "Fichier TXT", "LISEZMOI": "Fichier"}
+
+
+def test_window_starts_with_saved_profiles(monkeypatch):
+    """Profiles read at startup get their identity before the theme paints the server list."""
+    app()
+    import smftp.ui.main_window as module
+    saved = [{"name": "Bengadok", "protocol": "SSH", "host": "vps.example", "user": "root", "port": 22},
+             {"name": "Site", "protocol": "SFTP", "host": "files.example", "user": "web", "port": 22}]
+    monkeypatch.setattr(module, "load_sites", lambda: [dict(site) for site in saved])
+    window = module.MainWindow()
+    try:
+        assert window.site_list.count() == 2
+        for row in range(2):
+            item = window.site_list.item(row)
+            assert item.data(Qt.ItemDataRole.UserRole)
+            assert "double-clic" in item.toolTip()
+    finally:
+        window.closing = True
+        window.terminal.close_all()
+        window.thread.quit()
+        window.thread.wait(2000)

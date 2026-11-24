@@ -73,6 +73,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.site_list = QListWidget()
         self.site_list.setObjectName("sites")
         self.site_list.addItems([s.get('name') or s['host'] for s in self.sites])
+        for row, site in enumerate(self.sites):
+            self.site_list.item(row).setData(Qt.ItemDataRole.UserRole, identity(site))
         self.site_list.itemDoubleClicked.connect(lambda item: self.connect_profile(self.sites[self.site_list.row(item)]))
         self.site_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.site_list.customContextMenuRequested.connect(self.site_context_menu)

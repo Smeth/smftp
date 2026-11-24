@@ -249,8 +249,8 @@ class WorkspaceFeatures:
         self.site_list.clearSelection()
         for row in range(self.site_list.count()):
             item = self.site_list.item(row)
-            key = item.data(Qt.ItemDataRole.UserRole)
             site = self.sites[row] if row < len(self.sites) else {}
+            key = item.data(Qt.ItemDataRole.UserRole) or (identity(site) if site else "")
             terminal = is_terminal(site.get("protocol", ""))
             sessions = [s for s in self.terminal.sessions() if s.identity == key]
             open_ = bool(sessions) or bool(self.online and self.connection and self.connection.identity == key)
