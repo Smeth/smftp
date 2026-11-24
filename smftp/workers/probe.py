@@ -34,6 +34,9 @@ class ConnectionProbe(QThread):
             hosts.touch(exist_ok=True)
             client = make_client(connection.protocol, str(hosts), self.step.emit)
             home = client.connect(connection)
+            if connection.protocol == "SSH":
+                self.succeeded.emit("Connexion SSH réussie : serveur vérifié et authentification acceptée.")
+                return
             phase = "list"
             path = connection.remote_directory or home
             entries = client.listdir(path)

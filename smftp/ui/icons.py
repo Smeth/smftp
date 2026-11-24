@@ -188,10 +188,26 @@ def _close(p):
     p.drawLine(QPointF(15, 5), QPointF(5, 15))
 
 
+def _plus(p):
+    p.drawLine(QPointF(10, 4), QPointF(10, 16))
+    p.drawLine(QPointF(4, 10), QPointF(16, 10))
+
+
+def _terminal(p):
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawRoundedRect(QRectF(2.5, 3.5, 15, 13), 2, 2)
+    prompt = QPainterPath(QPointF(5.5, 7.5))
+    prompt.lineTo(8.5, 10)
+    prompt.lineTo(5.5, 12.5)
+    p.drawPath(prompt)
+    p.drawLine(QPointF(10, 13), QPointF(14, 13))
+
+
 SHAPES = {"pause": _pause, "play": _play, "pause_play": _pause_play, "cancel": _cancel,
           "stop": _stop, "retry": _retry, "trash": _trash, "copy": _copy, "save": _save,
           "eye": _eye, "eye_off": _eye_off, "folder": _folder,
-          "edit": _edit, "spark": _spark, "theme": _theme, "send": _send, "gear": _gear, "close": _close}
+          "edit": _edit, "spark": _spark, "theme": _theme, "send": _send, "gear": _gear, "close": _close,
+          "plus": _plus, "terminal": _terminal}
 
 
 def _pixmap(name, color, scale):

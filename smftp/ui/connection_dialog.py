@@ -5,12 +5,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox, QSpinBox, QCompleter,
                                QCheckBox, QDialogButtonBox, QLabel, QWidget, QHBoxLayout, QFileDialog)
-from smftp.models.entries import Connection, PROTOCOL_LABELS, DEFAULT_PORTS, ENCODINGS, normalize_encoding
+from smftp.models.entries import Connection, PROTOCOL_LABELS, DEFAULT_PORTS, ENCODINGS, normalize_encoding, uses_ssh
 from smftp.ui.icons import icon_button, make_icon, theme_of, recolor
 
 DEFAULT_PROTOCOL = "FTP"
 # URL scheme -> stored protocol. ftps:// is implicit TLS by convention, ftpes:// explicit.
-SCHEMES = {"sftp": "SFTP", "ssh": "SFTP", "ftp": "FTP", "ftps": "FTPSI", "ftpes": "FTPS"}
+SCHEMES = {"sftp": "SFTP", "ssh": "SSH", "ftp": "FTP", "ftps": "FTPSI", "ftpes": "FTPS"}
 
 
 def parse_address(text: str) -> dict:
@@ -54,11 +54,13 @@ class ConnectionDialog(QDialog):
         # Saved profiles, to refuse a second profile for the same server or name.
         self.sites = list(sites if sites is not None else getattr(parent, "sites", []) or [])
         self.setWindowTitle(self.tr("Modifier la connexion") if site else self.tr("Nouvelle connexion"))
-        self.setMinimumWidth(480)
+        # Wide enough for the four buttons (the primary one is bold), whatever rows are shown.
+        self.setMinimumWidth(720)
         self.save_only = False
         self.touched = False
         dark = theme_of(parent)
         form = QFormLayout(self)
+        self.form = form
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         heading = QLabel(self.tr("Connectez votre espace distant"))
         heading.setObjectName("dialogTitle")
@@ -92,7 +94,7 @@ class ConnectionDialog(QDialog):
         self.password.addAction(self.show_password, QLineEdit.ActionPosition.TrailingPosition)
         self.toggle_password(False)
         self.key = QLineEdit()
-        self.key.setPlaceholderText(self.tr("Chemin facultatif d’une clé SSH (SFTP uniquement)"))
+        self.key.setPlaceholderText(self.tr("Chemin facultatif d’une clé SSH (SFTP et SSH)"))
         self.key_picker = icon_button("folder", self.tr("Choisir une clé privée SSH…"), self.choose_key)
         self.remember = QCheckBox(self.tr("Mémoriser dans le coffre-fort système"))
         self.group = QLineEdit()
@@ -232,12 +234,28 @@ class ConnectionDialog(QDialog):
         if self.port.value() == DEFAULT_PORTS.get(self.current_protocol):
             self.port.setValue(DEFAULT_PORTS[protocol])
         self.current_protocol = protocol
-        sftp = protocol == "SFTP"
+        sftp = uses_ssh(protocol)
+        terminal = protocol == "SSH"
         self.key.setEnabled(sftp)
         self.key_picker.setEnabled(sftp)
         self.transfer_mode.setEnabled(not sftp)
         self.encoding.setEnabled(not sftp)
-        if protocol == "FTP":
+        self.local_directory.setEnabled(not terminal)
+        self.local_picker.setEnabled(not terminal)
+        # SSH terminal: no local folder, transfer mode or file-name encoding to set.
+        if hasattr(self, "form"):
+            for widget in (self.local_directory.parentWidget(), self.transfer_mode, self.encoding):
+                if self.form.indexOf(widget) >= 0:
+                    self.form.setRowVisible(widget, not terminal)
+            # Only the height follows the hidden rows: the width keeps the buttons readable.
+            self.resize(max(self.width(), self.sizeHint().width()), self.sizeHint().height())
+        self.ok_button.setText(self.tr("Enregistrer et ouvrir le terminal") if terminal
+                               else self.tr("Enregistrer et connecter"))
+        if terminal:
+            self.warning.setObjectName("muted")
+            self.warning.setText(self.tr("Connexion chiffrée : SSH. Ce profil ouvre une console sur le serveur "
+                                         "à la place de l’explorateur de fichiers."))
+        elif protocol == "FTP":
             self.warning.setObjectName("warning")
             self.warning.setText(self.tr("⚠ FTP transmet le mot de passe et les fichiers en clair. "
                                          "Préférez FTPS ou SFTP si le serveur les accepte."))
@@ -282,7 +300,7 @@ class ConnectionDialog(QDialog):
         if not self.user.text().strip():
             found["Utilisateur"] = self.tr("Indiquez le nom d’utilisateur (« anonymous » pour un FTP public).")
         key = self.key.text().strip()
-        if key and self.protocol_value() == "SFTP" and not Path(key).is_file():
+        if key and uses_ssh(self.protocol_value()) and not Path(key).is_file():
             found["Clé privée"] = self.tr("Clé privée introuvable : %s") % key
         if not found:
             try:
@@ -441,7 +459,7 @@ class ConnectionDialog(QDialog):
     def connection(self) -> Connection:
         protocol = self.protocol_value()
         return Connection(self.host.text().strip(), self.user.text().strip(), protocol,
-                          self.port.value(), self.password.text(), self.key.text().strip() if protocol == "SFTP" else "", self.remember.isChecked(), self.name.text().strip(),
+                          self.port.value(), self.password.text(), self.key.text().strip() if uses_ssh(protocol) else "", self.remember.isChecked(), self.name.text().strip(),
                           self.group.text().strip(), self.local_directory.text().strip(), self.remote_directory.text().strip(), self.timeout.value(),
-                          protocol == "SFTP" or bool(self.transfer_mode.currentData()),
-                          "auto" if protocol == "SFTP" else (self.encoding.currentData() or "auto"))
+                          uses_ssh(protocol) or bool(self.transfer_mode.currentData()),
+                          "auto" if uses_ssh(protocol) else (self.encoding.currentData() or "auto"))

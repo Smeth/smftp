@@ -49,7 +49,10 @@ class Scheduler(QObject):
     def profiles(self):
         from smftp.utils.profiles import identity
         result = {}
+        from smftp.models.entries import is_terminal
         for site in self.window.sites:
+            if is_terminal(site.get("protocol", "")):
+                continue  # SSH terminal profiles cannot transfer files.
             try:
                 result[identity(site)] = site
             except (ValueError, TypeError):

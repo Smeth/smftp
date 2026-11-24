@@ -87,3 +87,6 @@ QToolButton#sendButton:disabled { background: #b9cdf5; }
 QRadioButton { spacing: 8px; padding: 4px 0px; }
 QWidget#chatRow { background: transparent; }
 QPushButton#compact { padding: 2px 10px; }
+QStatusBar::item { border: none; }
+QWidget#tabCorner { background: transparent; }
+QMenuBar::item:disabled { color: #b4bccb; }

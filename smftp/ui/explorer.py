@@ -66,6 +66,15 @@ class LocalView(QTreeView):
 
 
 class LocalModel(QFileSystemModel):
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        # Windows names types in its own language ("File Folder", "Text Document"): say it in French.
+        if role == Qt.ItemDataRole.DisplayRole and index.column() == 2:
+            if self.isDir(index):
+                return self.tr("Dossier")
+            suffix = Path(self.fileName(index)).suffix.lstrip(".")
+            return self.tr("Fichier %s") % suffix.upper() if suffix else self.tr("Fichier")
+        return super().data(index, role)
+
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
         if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
             return [self.tr("Nom"), self.tr("Taille"), self.tr("Type"), self.tr("Modifié le")][section] if section < 4 else ""

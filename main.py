@@ -37,6 +37,10 @@ def main() -> None:
                 # The assistant imports the SDK lazily: check here that the package is bundled.
                 import anthropic
                 anthropic.Anthropic(api_key="smoke-test").beta.messages
+                # The SSH terminal needs pyte and wcwidth in the bundle.
+                import pyte
+                import wcwidth
+                pyte.ByteStream(pyte.Screen(10, 2)).feed(b"ok")
             except Exception as error:
                 print(f"Smoke test: SDK Claude indisponible ({error!r})", file=sys.stderr)
                 window.close()

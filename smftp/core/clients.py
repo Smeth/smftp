@@ -345,6 +345,8 @@ def trust_host_key(error: UnknownHostError, known_hosts: str) -> None:
 def make_client(protocol: str, known_hosts: str, reporter=None) -> BaseClient:
     if protocol == "SFTP":
         return SFTPClient(known_hosts, reporter)
+    if protocol == "SSH":
+        return ShellClient(known_hosts, reporter)
     return {"FTP": FTPClient, "FTPS": FTPSClient, "FTPSI": ImplicitFTPSClient}[protocol](reporter)
 
 
@@ -359,6 +361,15 @@ class SFTPClient(BaseClient):
         self.hash_command = None  # None = not detected, False = unsupported.
 
     def connect(self, connection: Connection) -> str:
+        self.open_ssh(connection)
+        self.report("Statut : authentification SSH réussie ; ouverture du sous-système SFTP…")
+        self.sftp = self.ssh.open_sftp()
+        self.sftp.get_channel().settimeout(connection.timeout)
+        self.report("Statut : sous-système SFTP ouvert ; lecture du dossier de départ…")
+        return self.sftp.normalize(".")
+
+    def open_ssh(self, connection: Connection) -> None:
+        """Connect and authenticate; an unknown server key raises UnknownHostError."""
         import paramiko
         self.secrets = (connection.password,)
 
@@ -395,13 +406,8 @@ class SFTPClient(BaseClient):
                          timeout=connection.timeout, auth_timeout=connection.timeout,
                          banner_timeout=connection.timeout, channel_timeout=connection.timeout,
                          look_for_keys=False, allow_agent=False, transport_factory=ReportingTransport)
-        self.report("Statut : authentification SSH réussie ; ouverture du sous-système SFTP…")
         self.ssh.get_transport().set_keepalive(30)
         self.timeout = connection.timeout
-        self.sftp = self.ssh.open_sftp()
-        self.sftp.get_channel().settimeout(connection.timeout)
-        self.report("Statut : sous-système SFTP ouvert ; lecture du dossier de départ…")
-        return self.sftp.normalize(".")
 
     def upload(self, local, remote, progress, offset=0):
         total = Path(local).stat().st_size
@@ -500,5 +506,28 @@ class SFTPClient(BaseClient):
     def close(self) -> None:
         if hasattr(self, "sftp"):
             self.sftp.close()
+        if hasattr(self, "ssh"):
+            self.ssh.close()
+
+
+class ShellClient(SFTPClient):
+    """SSH terminal profile: authentication and an interactive shell, no SFTP subsystem."""
+
+    def connect(self, connection: Connection) -> str:
+        self.open_ssh(connection)
+        self.report("Statut : authentification SSH réussie.")
+        return connection.remote_directory or "~"
+
+    def open_shell(self, columns: int, lines: int):
+        """Interactive login shell on a pseudo-terminal (xterm, UTF-8)."""
+        channel = self.ssh.get_transport().open_session(timeout=self.timeout)
+        channel.get_pty(term="xterm-256color", width=columns, height=lines)
+        channel.invoke_shell()
+        return channel
+
+    def listdir(self, path: str) -> list[Entry]:
+        raise NotImplementedError("Un profil SSH ouvre un terminal, pas l’explorateur de fichiers.")
+
+    def close(self) -> None:
         if hasattr(self, "ssh"):
             self.ssh.close()

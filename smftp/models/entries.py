@@ -3,8 +3,13 @@ from dataclasses import dataclass, field
 
 
 # Stored protocol value -> label shown to the user.
-PROTOCOL_LABELS = {"SFTP": "SFTP", "FTPS": "FTPS explicite", "FTPSI": "FTPS implicite", "FTP": "FTP"}
-DEFAULT_PORTS = {"SFTP": 22, "FTPS": 21, "FTPSI": 990, "FTP": 21}
+PROTOCOL_LABELS = {"SFTP": "SFTP", "FTPS": "FTPS explicite", "FTPSI": "FTPS implicite", "FTP": "FTP",
+                   "SSH": "SSH (terminal)"}
+DEFAULT_PORTS = {"SFTP": 22, "FTPS": 21, "FTPSI": 990, "FTP": 21, "SSH": 22}
+# SSH profiles open a terminal, not the file panels.
+TERMINAL_PROTOCOLS = {"SSH"}
+# Protocols that authenticate over SSH (private key, host-key check).
+SSH_PROTOCOLS = {"SFTP", "SSH"}
 # FTP file-name encodings: stored value -> label. "auto" = UTF-8, switching to Latin-1
 # for the whole session when a listing is not valid UTF-8.
 ENCODINGS = {"auto": "Automatique (UTF-8, sinon Latin-1)", "utf-8": "UTF-8",
@@ -31,6 +36,14 @@ def normalize_encoding(value) -> str:
 
 def protocol_label(protocol: str) -> str:
     return PROTOCOL_LABELS.get(protocol, protocol)
+
+
+def is_terminal(protocol: str) -> bool:
+    return protocol in TERMINAL_PROTOCOLS
+
+
+def uses_ssh(protocol: str) -> bool:
+    return protocol in SSH_PROTOCOLS
 
 
 @dataclass(frozen=True)

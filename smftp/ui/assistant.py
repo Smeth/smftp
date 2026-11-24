@@ -954,6 +954,8 @@ class AssistantPanel(QFrame):
         # Saves the model a round trip (and minutes on a local model).
         profiles = []
         for site in window.sites:
+            if site.get("protocol") == "SSH":
+                continue  # Terminal profiles: no file tools.
             secret = "mot de passe mémorisé" if site.get("remember") else "mot de passe non mémorisé"
             profiles.append(f"{site.get('name') or site['host']} ({site['protocol']}, {site['host']}, {secret})")
         lines.append("Profils enregistrés : " + ("; ".join(profiles) if profiles else "aucun"))

@@ -9,7 +9,9 @@ from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import (QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTreeWidget, QTreeWidgetItem, QDialogButtonBox, QInputDialog,
     QMessageBox, QStyle, QSystemTrayIcon, QMenu)
-from smftp.models.entries import Connection
+from smftp.models.entries import Connection, is_terminal, uses_ssh, protocol_label
+from smftp.core.errors import redact
+from smftp.ui.connection_dialog import ConnectionDialog
 from smftp.utils.profiles import normalize_profile, profile_for, identity
 from smftp.workers.transfer import Transfer
 
@@ -41,11 +43,16 @@ class WorkspaceFeatures:
         self.add_command(menu, "Gestionnaire de sites…", self.manage_sites, "Ctrl+Shift+S")
         self.add_command(menu, "Reconnecter", self.reconnect, "Ctrl+R")
         self.add_command(menu, "Déconnecter", self.disconnect_session)
+        menu.addSeparator()
+        self.add_command(menu, "Nouvelle session de terminal", self.new_terminal_session, "Ctrl+Shift+T")
+        self.add_command(menu, "Fermer la session de terminal", self.terminal.close_current, "Ctrl+Shift+W")
+        menu.addSeparator()
         self.recent_menu = menu.addMenu(self.tr("Connexions récentes"))
         self.update_recent_menu()
         menu.addSeparator()
         self.add_command(menu, "Quitter", self.close, "Ctrl+Q")
         edit = self.menuBar().addMenu(self.tr("Édition"))
+        self.edit_menu = edit
         for title, callback, shortcut in [
             ("Copier", lambda: self.copy_files(False), "Ctrl+C"),
             ("Couper", lambda: self.copy_files(True), "Ctrl+X"),
@@ -58,6 +65,7 @@ class WorkspaceFeatures:
             ("Recherche récursive…", self.recursive_search, "Ctrl+Shift+F")]:
             self.add_command(edit, title, callback, shortcut)
         transfers = self.menuBar().addMenu(self.tr("Transferts"))
+        self.transfers_menu = transfers
         for title, callback in [("Téléverser la sélection", lambda: self.file_action("transfer", self.local)),
             ("Télécharger la sélection", lambda: self.file_action("transfer", self.remote)),
             ("Mettre tout en pause", self.transfers.pause_all), ("Reprendre tout", self.transfers.resume_all),
@@ -67,12 +75,17 @@ class WorkspaceFeatures:
             ("Limites et conflits…", self.preferences)]:
             self.add_command(transfers, title, callback)
         display = self.display_menu
+        self.add_command(display, "Vue Fichiers", lambda: self.set_view("files"))
+        self.add_command(display, "Vue Terminal", lambda: self.set_view("terminal"))
+        display.addSeparator()
         self.add_command(display, "Fichiers distants cachés", self.remote.show_hidden, checkable=True)
         self.add_command(display, "Vue en icônes", self.set_icon_views, checkable=True)
         self.add_command(display, "Panneaux verticaux", lambda checked: self.panel_splitter.setOrientation(
             Qt.Orientation.Vertical if checked else Qt.Orientation.Horizontal), checkable=True)
-        self.add_command(display, "Journal", lambda: self.activity_tabs.setCurrentWidget(self.log_panel))
-        self.add_command(display, "File de transferts", lambda: self.activity_tabs.setCurrentWidget(self.transfers))
+        self.add_command(display, "Journal", lambda: (self.set_view("files"),
+                                                      self.activity_tabs.setCurrentWidget(self.log_panel)))
+        self.add_command(display, "File de transferts", lambda: (self.set_view("files"),
+                                                                 self.activity_tabs.setCurrentWidget(self.transfers)))
         self.add_command(display, "Effacer le journal", self.clear_log)
         self.add_command(display, "Thème clair / sombre", self.toggle_theme)
         self.add_command(self.tools_menu, "Tâches planifiées…", self.show_schedule, "Ctrl+Shift+P")
@@ -115,16 +128,27 @@ class WorkspaceFeatures:
             self.last_panel = self.local
         return getattr(self, "last_panel", self.local)
 
-    def connect_profile(self, site):
-        if self.busy or self.closing:
-            return
-        connection = Connection(**normalize_profile(site))
+    def stored_secret(self, connection):
         try:
             import keyring
-            secret = keyring.get_password("SMFTP", connection.identity)
+            return keyring.get_password("SMFTP", connection.identity)
         except Exception:
-            secret = None
-        has_key = connection.protocol == "SFTP" and bool(connection.key_file)
+            return None
+
+    def connect_profile(self, site):
+        if self.closing:
+            return
+        if is_terminal(site.get("protocol", "")):
+            self.open_terminal(site)
+            return
+        connection = Connection(**normalize_profile(site))
+        if self.online and self.connection and self.connection.identity == connection.identity:
+            self.set_view("files")
+            return
+        if self.busy:
+            return
+        secret = self.stored_secret(connection)
+        has_key = uses_ssh(connection.protocol) and bool(connection.key_file)
         if secret is None and not has_key and connection.user != "anonymous":
             self.new_connection(site)
             return
@@ -170,15 +194,142 @@ class WorkspaceFeatures:
             self.start_connection()
 
     def record_recent_connection(self):
-        profile = profile_for(self.connection)
-        self.recent_sites = [profile] + [site for site in self.recent_sites
-            if isinstance(site, dict) and identity(site) != self.connection.identity]
-        self.recent_sites = self.recent_sites[:10]
-        self.settings.setValue("recent_sites", self.recent_sites)
-        self.update_recent_menu()
+        self.remember_recent(self.connection)
         if self.connection.local_directory:
             self.local.navigate(self.connection.local_directory)
         self.transfers.authorize(self.connection)
+
+    def remember_recent(self, connection):
+        profile = profile_for(connection)
+        self.recent_sites = [profile] + [site for site in self.recent_sites
+            if isinstance(site, dict) and identity(site) != connection.identity]
+        self.recent_sites = self.recent_sites[:10]
+        self.settings.setValue("recent_sites", self.recent_sites)
+        self.update_recent_menu()
+
+    # ----- terminal (SSH profiles) -----
+    def set_view(self, name):
+        """Centre of the window: "files" (FTP / FTPS / SFTP panels) or "terminal" (SSH tabs)."""
+        files = name != "terminal"
+        # File commands act on the panels: off while they are hidden, so nothing happens out of sight.
+        for menu in (self.edit_menu, self.transfers_menu):
+            menu.menuAction().setEnabled(files)
+            for action in menu.actions():
+                action.setEnabled(files)
+        for action in self.file_shortcuts:
+            action.setEnabled(files)
+        self.speed_label.setVisible(files)
+        if name == "terminal":
+            self.center.setCurrentWidget(self.terminal)
+            self.terminal_changed(self.terminal.current())
+            if self.terminal.current() is not None:
+                self.terminal.current().view.setFocus()
+        else:
+            self.center.setCurrentWidget(self.files_view)
+            if self.online and self.connection:
+                self.statusBar().showMessage(f"●  Connecté    •    {self.connection.host}    •    "
+                                             f"{protocol_label(self.connection.protocol)}")
+            else:
+                self.statusBar().showMessage(self.tr("●  Déconnecté"))
+        self.update_site_states()
+
+    def update_site_states(self):
+        """« Mes serveurs »: icon by kind, open servers in colour, the one on screen selected."""
+        from PySide6.QtGui import QFont
+        from smftp.ui.icons import make_icon
+        if not hasattr(self, "terminal"):
+            return
+        dark = getattr(self, "dark", True)
+        terminal_view = self.center.currentWidget() is self.terminal
+        current = self.terminal.current() if terminal_view else None
+        shown = current.identity if current is not None else (
+            self.connection.identity if not terminal_view and self.online and self.connection else None)
+        accent = "#6ea8ff" if dark else "#1f6feb"
+        self.site_list.blockSignals(True)
+        self.site_list.clearSelection()
+        for row in range(self.site_list.count()):
+            item = self.site_list.item(row)
+            key = item.data(Qt.ItemDataRole.UserRole)
+            site = self.sites[row] if row < len(self.sites) else {}
+            terminal = is_terminal(site.get("protocol", ""))
+            sessions = [s for s in self.terminal.sessions() if s.identity == key]
+            open_ = bool(sessions) or bool(self.online and self.connection and self.connection.identity == key)
+            item.setIcon(make_icon("terminal" if terminal else "folder", dark, accent if open_ else None))
+            font = QFont(item.font())
+            font.setBold(open_)
+            item.setFont(font)
+            if open_:
+                state = (self.tr("%n session(s) de terminal ouverte(s)", "", len(sessions)) if terminal
+                         else self.tr("connecté"))
+            else:
+                state = self.tr("double-clic pour ouvrir le terminal") if terminal else self.tr("double-clic pour connecter")
+            item.setToolTip(f"{key.split('://', 1)[-1]} — {protocol_label(site.get('protocol', ''))}\n{state}")
+            if key == shown:
+                item.setSelected(True)
+        self.site_list.blockSignals(False)
+
+    def open_terminal(self, site, new=False):
+        """Terminal on an SSH or SFTP profile, with the vault secret; the form opens when none is stored."""
+        if self.closing:
+            return
+        connection = Connection(**normalize_profile(site))
+        if not new:
+            session = self.terminal.find(connection.identity)
+            if session is not None:
+                self.terminal.show_session(session)
+                self.set_view("terminal")
+                return
+        secret = self.stored_secret(connection)
+        if secret is None and not connection.key_file:
+            dialog = ConnectionDialog(self, site)
+            if not dialog.exec():
+                return
+            connection = dialog.connection()
+            if not self.persist_profile(connection, site) or dialog.save_only:
+                return
+            if not uses_ssh(connection.protocol):
+                self.connection = connection
+                self.start_connection()
+                return
+            site = profile_for(connection)
+        else:
+            connection.password = secret or ""
+        self.start_terminal(site, connection)
+
+    def start_terminal(self, site, connection):
+        self.log(self.tr("Ouverture d’un terminal SSH sur %s.") % (connection.name or connection.host))
+        self.terminal.open(site, connection)
+        self.set_view("terminal")
+        self.remember_recent(connection)
+
+    def new_terminal_session(self):
+        if self.terminal.current() is not None:
+            self.terminal.request_new_session()
+        else:
+            self.statusBar().showMessage(self.tr("Ouvrez d’abord un serveur SSH depuis « Mes serveurs »."), 4000)
+
+    def terminal_changed(self, session):
+        self.update_site_states()
+        if self.center.currentWidget() is not self.terminal:
+            return
+        if session is None:
+            self.statusBar().showMessage(self.tr("●  Aucun terminal ouvert"))
+            return
+        states = {"connecting": self.tr("connexion…"), "open": self.tr("connecté"), "closed": self.tr("session terminée")}
+        connection = session.connection
+        self.statusBar().showMessage(f"●  {self.tr('Terminal')} {states.get(session.state, '')}    •    "
+                                     f"{connection.user}@{connection.host}    •    SSH")
+
+    def terminal_failed(self, info, session):
+        secrets = tuple(filter(None, [session.connection.password]))
+        self.log(redact(f"[Terminal {session.title}] Erreur : {info.summary}\n{info.details}", secrets))
+        self.statusBar().showMessage(self.tr("Terminal : %s") % redact(info.summary, secrets), 8000)
+
+    def terminal_host_unknown(self, error, session):
+        if self.trust_host(error):
+            session.start()
+        else:
+            session.view.write_notice(self.tr("Connexion annulée : l’identité du serveur n’a pas été confirmée."), "33")
 
     def update_recent_menu(self):
         self.recent_menu.clear()
@@ -205,7 +356,6 @@ class WorkspaceFeatures:
             if group not in groups:
                 groups[group] = QTreeWidgetItem([group])
                 tree.addTopLevelItem(groups[group])
-            from smftp.models.entries import protocol_label
             item = QTreeWidgetItem([site.get("name") or site["host"], site["host"], protocol_label(site["protocol"])])
             item.setData(0, Qt.ItemDataRole.UserRole, site)
             groups[group].addChild(item)

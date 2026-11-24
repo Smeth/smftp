@@ -16,7 +16,7 @@ from smftp.workers.transfer import Transfer
 from smftp.core.errors import ErrorInfo, describe_error, redact
 from smftp.utils.profiles import profile_for, merge_profiles, normalize_profile, store_credential, identity, read_profiles, XMLCorrectionRequired
 from smftp.ui.workspace_features import WorkspaceFeatures
-from smftp.models.entries import protocol_label
+from smftp.models.entries import protocol_label, is_terminal, uses_ssh
 
 
 class MainWindow(WorkspaceFeatures, QMainWindow):
@@ -72,7 +72,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         side.addWidget(label)
         self.site_list = QListWidget()
         self.site_list.setObjectName("sites")
-        self.site_list.addItems([f"◉  {s.get('name') or s['host']}" for s in self.sites])
+        self.site_list.addItems([s.get('name') or s['host'] for s in self.sites])
         self.site_list.itemDoubleClicked.connect(lambda item: self.connect_profile(self.sites[self.site_list.row(item)]))
         self.site_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.site_list.customContextMenuRequested.connect(self.site_context_menu)
@@ -82,7 +82,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.connect_button.setObjectName("primary")
         self.connect_button.clicked.connect(lambda: self.new_connection())
         side.addWidget(self.connect_button)
-        note = QLabel(self.tr("SFTP · FTPS · FTP • identifiants dans le coffre-fort système"))
+        note = QLabel(self.tr("SFTP · FTPS · FTP · SSH • identifiants dans le coffre-fort système"))
         note.setObjectName("muted")
         note.setWordWrap(True)
         side.addWidget(note)
@@ -133,7 +133,21 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         tabs.setCurrentIndex(0)
         main.addWidget(tabs)
         main.setSizes([600, 190])
-        workspace.addWidget(main)
+        # Centre: file panels for FTP / FTPS / SFTP, terminal tabs for SSH profiles.
+        from PySide6.QtWidgets import QStackedWidget
+        from smftp.ui.terminal import TerminalArea
+        self.center = QStackedWidget()
+        self.files_view = main
+        self.center.addWidget(main)
+        self.terminal = TerminalArea(self.settings.value("dark", True, type=bool))
+        self.terminal.status.connect(self.log)
+        self.terminal.failed.connect(self.terminal_failed)
+        self.terminal.host_unknown.connect(self.terminal_host_unknown)
+        self.terminal.new_session_requested.connect(lambda site: self.open_terminal(site, new=True))
+        self.terminal.emptied.connect(lambda: self.set_view("files"))
+        self.terminal.current_changed.connect(self.terminal_changed)
+        self.center.addWidget(self.terminal)
+        workspace.addWidget(self.center)
         # The assistant is a full-height side pane, shown on demand.
         from smftp.ui.assistant import AssistantPanel
         self.assistant_panel = AssistantPanel(self)
@@ -168,6 +182,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.session.disconnected.connect(self.on_disconnected)
         self.thread.finished.connect(self.session.deleteLater)
         self.thread.finished.connect(self.finish_close)
+        self.file_shortcuts = []
         for text, key, callback in [("Nouvelle connexion", "Ctrl+K", lambda: self.new_connection()),
                                      ("Actualiser", "F5", self.refresh),
                                      ("Rechercher", "Ctrl+F", self.focus_search),
@@ -178,6 +193,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             action.setShortcut(QKeySequence(key))
             action.triggered.connect(callback)
             self.addAction(action)
+            if key != "Ctrl+K":
+                self.file_shortcuts.append(action)
         hidden = QAction(self.tr("Afficher les fichiers locaux cachés"), self)
         hidden.setCheckable(True)
         hidden.triggered.connect(self.local.show_hidden)
@@ -308,6 +325,9 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             if not self.persist_profile(connection, site):
                 return
             if not dialog.save_only:
+                if is_terminal(connection.protocol):
+                    self.start_terminal(profile_for(connection), connection)
+                    return
                 self.connection = connection
                 self.start_connection()
 
@@ -316,8 +336,9 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         for site in self.sites:
             group = site.get("group", "")
             label = (group + " / " if group else "") + (site.get("name") or site["host"])
-            self.site_list.addItem(f"◉  {label}")
-            self.site_list.item(self.site_list.count() - 1).setToolTip(identity(site))
+            self.site_list.addItem(label)
+            self.site_list.item(self.site_list.count() - 1).setData(Qt.ItemDataRole.UserRole, identity(site))
+        self.update_site_states()
 
     def persist_profile(self, connection, original=None):
         self.last_secret = connection.password
@@ -363,7 +384,17 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             return
         site = self.sites[self.site_list.row(item)]
         menu = QMenu(self)
-        menu.addAction(self.tr("Connecter")).triggered.connect(lambda: self.connect_profile(site))
+        protocol = site.get("protocol", "")
+        if is_terminal(protocol):
+            menu.addAction(self.tr("Ouvrir le terminal")).triggered.connect(lambda: self.open_terminal(site))
+            menu.addAction(self.tr("Nouvelle session de terminal")).triggered.connect(
+                lambda: self.open_terminal(site, new=True))
+        else:
+            menu.addAction(self.tr("Connecter")).triggered.connect(lambda: self.connect_profile(site))
+            if uses_ssh(protocol):
+                menu.addAction(self.tr("Ouvrir un terminal")).triggered.connect(
+                    lambda: self.open_terminal(site, new=True))
+        menu.addSeparator()
         menu.addAction(self.tr("Modifier…")).triggered.connect(lambda: self.new_connection(site))
         menu.addAction(self.tr("Supprimer le profil…")).triggered.connect(lambda: self.delete_profile(site))
         menu.exec(self.site_list.viewport().mapToGlobal(point))
@@ -384,6 +415,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             self.on_error(self.tr("Suppression incomplète : vérifiez l’accès au coffre-fort et au fichier des profils. Le profil est conservé pour pouvoir réessayer."))
 
     def start_connection(self):
+        self.set_view("files")
         self.activity_tabs.setCurrentWidget(self.log_panel)
         self.busy = True
         self.connect_button.setEnabled(False)
@@ -394,6 +426,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
 
     def on_connected(self, path):
         self.online = True
+        self.update_site_states()
         self.disconnect_button.setEnabled(True)
         self.statusBar().showMessage(f"●  Connecté    •    {self.connection.host}    •    {protocol_label(self.connection.protocol)}")
         self.log(self.tr("Connexion établie. Lecture du dossier distant…"))
@@ -1008,6 +1041,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
 
     def on_disconnected(self):
         self.online = False
+        self.update_site_states()
         self.pending_saves.clear()
         self.disconnect_button.setEnabled(False)
         self.remote.view.clear()
@@ -1062,16 +1096,23 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
     def confirm_host(self, error):
         self.busy = False
         self.connect_button.setEnabled(True)
+        if self.trust_host(error):
+            self.start_connection()
+
+    def trust_host(self, error):
+        """Ask before recording an unknown SSH server key; True once it is trusted."""
         answer = QMessageBox.question(self, self.tr("Vérifier l’identité du serveur"),
             self.tr("Première connexion à %s\n\nEmpreinte %s :\n%s\n\nComparez cette empreinte avec celle fournie par votre administrateur. Faire confiance à ce serveur ?") % (error.host, error.key_type, error.fingerprint),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-        if answer == QMessageBox.StandardButton.Yes:
-            try:
-                from smftp.core.clients import trust_host_key
-                trust_host_key(error, str(data_dir() / "known_hosts"))
-                self.start_connection()
-            except Exception:
-                self.on_error(self.tr("Impossible d’enregistrer la clé du serveur."))
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        try:
+            from smftp.core.clients import trust_host_key
+            trust_host_key(error, str(data_dir() / "known_hosts"))
+            return True
+        except Exception:
+            self.on_error(self.tr("Impossible d’enregistrer la clé du serveur."))
+            return False
 
     def toggle_theme(self):
         self.dark = not self.dark
@@ -1084,16 +1125,22 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.setStyleSheet(path.read_text(encoding="utf-8"))
         from smftp.ui.icons import recolor
         recolor(self, self.dark)
+        if hasattr(self, "terminal"):
+            self.terminal.set_dark(self.dark)
+            self.update_site_states()
 
     def closeEvent(self, event):
         if not self.closing:
             dirty = any(editor.dirty for editor in self.editors if hasattr(editor, "dirty"))
             unsent = any(record.get("unsent") for record in self.edit_records.values())
             import sys
-            if "--smoke-test" not in sys.argv and (self.isVisible() or self.online or self.transfers.active() or dirty or unsent):
+            terminals = len(self.terminal.sessions())
+            if "--smoke-test" not in sys.argv and (self.isVisible() or self.online or self.transfers.active() or dirty or unsent or terminals):
                 message = self.tr("Voulez-vous quitter SMFTP ?")
                 if self.online or self.busy:
                     message += self.tr("\nLa connexion au serveur sera fermée.")
+                if terminals:
+                    message += self.tr("\n%n session(s) de terminal seront fermées.", "", terminals)
                 if self.transfers.active():
                     message += self.tr("\nLes transferts seront interrompus et la file sera conservée en pause pour le prochain lancement.")
                 if self.scheduler.enabled_count():
@@ -1106,7 +1153,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                     return
         local_active = any(w.isRunning() for w in getattr(self, "local_workers", []))
         sync_active = self.sync_running() or any(w.isRunning() for w in self.search_workers)
-        if self.thread.isRunning() or self.transfers.active() or local_active or sync_active:
+        self.terminal.close_all()
+        if self.thread.isRunning() or self.transfers.active() or local_active or sync_active or self.terminal.running():
             event.ignore()
             if not self.closing:
                 self.closing = True
@@ -1131,7 +1179,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
 
     def finish_close(self):
         sync_active = self.sync_running() or any(w.isRunning() for w in self.search_workers)
-        if self.closing and not self.thread.isRunning() and not self.transfers.active() and not sync_active and not any(w.isRunning() for w in getattr(self, "local_workers", [])):
+        if (self.closing and not self.thread.isRunning() and not self.transfers.active() and not sync_active
+                and not self.terminal.running() and not any(w.isRunning() for w in getattr(self, "local_workers", []))):
             if hasattr(self, "close_timer"):
                 self.close_timer.stop()
             self.close()
