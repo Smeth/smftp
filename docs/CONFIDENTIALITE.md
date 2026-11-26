@@ -25,7 +25,7 @@ La version Microsoft Store range ces fichiers dans le dossier privé de l'applic
 SMFTP se connecte uniquement :
 
 1. **Aux serveurs que vous configurez** (FTP, FTPS, SFTP, SSH), pour les opérations que vous demandez ou que vous avez planifiées.
-2. **À GitHub** (`api.github.com`), seulement quand vous choisissez *Aide → Rechercher les mises à jour*. La requête ne contient aucune donnée personnelle. Cette commande n'existe pas dans la version Microsoft Store, mise à jour par le Store.
+2. **À GitHub** (`api.github.com`, et `github.com` avec ses serveurs de fichiers pour télécharger une mise à jour) : au démarrage, une fois par jour au plus, pour vérifier s'il existe une nouvelle version (désactivable dans *Préférences → Vérifier automatiquement les mises à jour*), quand vous choisissez *Aide → Rechercher les mises à jour*, et quand vous choisissez *Télécharger et installer*. Ces requêtes ne contiennent aucune donnée personnelle. La version Microsoft Store, mise à jour par le Store, n'en envoie aucune.
 3. **Au service d'intelligence artificielle de votre choix**, seulement si vous utilisez l'assistant (voir ci-dessous).
 
 ## Assistant IA (facultatif)

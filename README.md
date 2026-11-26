@@ -1,6 +1,6 @@
-# SMFTP 1.1
+# SMFTP 1.2
 
-Version actuelle : **1.1.0**. Les défauts relevés par l’audit du 9 novembre 2026 sont corrigés et couverts par des tests (voir [docs/AUDIT_2026-11-09.md](docs/AUDIT_2026-11-09.md) pour le constat d’origine). Données personnelles : voir la [politique de confidentialité](docs/CONFIDENTIALITE.md).
+Version actuelle : **1.2.0**. Les défauts relevés par l’audit du 9 novembre 2026 sont corrigés et couverts par des tests (voir [docs/AUDIT_2026-11-09.md](docs/AUDIT_2026-11-09.md) pour le constat d’origine). Données personnelles : voir la [politique de confidentialité](docs/CONFIDENTIALITE.md).
 
 Client de bureau natif Python / PySide6, en français. Le design reprend la lisibilité de Cyberduck, l’explorateur à deux panneaux de Transmit et la barre latérale, les onglets et les accents bleus de VS Code. Il ne réutilise pas leurs marques ni leurs ressources graphiques.
 
@@ -40,7 +40,13 @@ Sur Linux / macOS : `python3 -m venv .venv`, puis `.venv/bin/pip install -r requ
 - **Préférences** configure dossiers de départ et temporaire, concurrence, conflits et la **vérification par empreinte** (activée par défaut). Après chaque fichier envoyé ou reçu, le serveur calcule l’empreinte du fichier (commande `HASH` ou `XSHA256`/`XSHA1`/`XMD5` en FTP, `sha256sum`/`shasum`/`sha1sum`/`md5sum` en SFTP) et elle est comparée à la copie locale. Un écart fait échouer le transfert : à l’envoi, le fichier distant d’origine est conservé et le temporaire supprimé ; au téléchargement, le fichier local d’origine est conservé. Un serveur qui ne calcule pas d’empreinte (compte SFTP limité à `internal-sftp`, serveur FTP sans extension) est signalé une fois dans le journal, et seule la taille est vérifiée. **Apparence** alterne les thèmes clair / sombre.
 - **Fichier** propose connexion, gestionnaire de sites, reconnexion, déconnexion, dix connexions récentes et quitter. **Édition** propose copier/couper/coller, sélection, propriétés et recherche récursive (`Ctrl+Shift+F`, motifs `*.php` etc., limite 10 000 résultats). Les copies locales sont accessibles au presse-papiers Windows ; la copie distante utilise un intermédiaire local. Couper/coller entre serveur et disque n’efface rien automatiquement : copiez puis supprimez après vérification.
 - **Affichage** propose fichiers distants cachés, vues en icônes, panneaux horizontaux/verticaux, journal et transferts. **Aide** fournit documentation, raccourcis, diagnostic et version. Les boîtes de dialogue Qt standard sont traduites en français quand le catalogue fourni est chargé.
-- **Aide → Rechercher les mises à jour** compare la version installée à la dernière release GitHub et ouvre sa page de téléchargement si une version plus récente existe. Le téléchargement et l’installation restent à confirmer depuis GitHub.
+- **Mises à jour** : au démarrage, SMFTP vérifie en arrière-plan, une fois par jour au plus, la dernière release GitHub (**Préférences → Vérifier automatiquement les mises à jour**, activé par défaut). Une nouvelle version est signalée sans fenêtre bloquante : bouton dans la barre d’état et entrée **Aide → Mise à jour x.y.z disponible…**. **Aide → Rechercher les mises à jour…** vérifie à la demande et affiche le résultat. La boîte **Mise à jour disponible** montre les notes de version et propose :
+  - **Télécharger et installer** (seulement si SMFTP a été installé par l’installeur, reconnu à `unins000.exe` à côté de `SMFTP.exe`) : téléchargement de `SMFTP-<version>-setup-x64.exe` avec progression et annulation, en HTTPS, uniquement depuis `https://github.com/Smeth/smftp/releases/download/…` et les serveurs de fichiers de GitHub vers lesquels il redirige. L’empreinte SHA-256 est comparée à `SHA256SUMS.txt` de la même release : sans empreinte publiée, ou si elle diffère, le fichier est supprimé et rien n’est lancé. SMFTP se ferme ensuite comme avec **Quitter** (la file de transferts est conservée en pause) et lance l’assistant d’installation, qui met à jour l’installation existante.
+  - **Ouvrir la page** de la release (copie portable ou lancée depuis les sources : mise à jour manuelle) ;
+  - **Ignorer cette version** : elle n’est plus signalée au démarrage (une version plus récente le sera) ;
+  - **Plus tard**.
+
+  La version Microsoft Store n’envoie aucune requête : le Store la met à jour. La version Uptodown utilise le même installeur Inno Setup que GitHub (même AppId) : elle se met à jour avec le fichier de la release GitHub, vérifié de la même façon, plutôt que de renvoyer vers la page Uptodown (pas de vérification d’empreinte possible depuis celle-ci).
 - **Préférences → Reconnexion automatique** active jusqu’à trois nouvelles tentatives espacées de 3, 6 et 9 secondes après une erreur réseau transitoire. Les échecs d’authentification et de vérification TLS/SSH ne sont pas relancés automatiquement. La perte d’une connexion inactive est détectée lors de l’opération suivante. Les notifications système de fin de transfert peuvent être désactivées dans les préférences.
 - **Outils → Commande FTP** envoie une commande de contrôle sur la session FTP/FTPS et affiche sa réponse dans le journal. Les commandes d’authentification et de transfert de données restent réservées à l’interface. Les commandes potentiellement destructrices demandent confirmation.
 - **Glisser du distant vers l’Explorateur Windows** : clic droit → **Préparer le glisser-déposer externe** ; attendez le message « Copie prête », puis glissez la sélection vers l’Explorateur. Cette préparation télécharge une copie locale ; gardez l’application ouverte jusqu’à la fin de la copie Windows. Une modification détectée par actualisation invalide le cache préparé. Le téléchargement Windows différé en un seul geste n’est pas implémenté.
@@ -113,7 +119,7 @@ Les tests démarrent des serveurs FTP et SSH/SFTP exclusivement sur `127.0.0.1`,
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -Distribution github
 ```
 
-`-Distribution` choisit le canal : `github` (par défaut) et `uptodown` gardent **Aide → Rechercher les mises à jour** ; `store` le retire, car le Microsoft Store met lui-même à jour les applications qu’il installe.
+`-Distribution` choisit le canal : `github` (par défaut) et `uptodown` gardent la vérification des mises à jour (automatique et **Aide → Rechercher les mises à jour**) ; `store` la retire entièrement, car le Microsoft Store met lui-même à jour les applications qu’il installe.
 
 Le build désactive UPX (souvent pris pour un virus par les antivirus), retire les bibliothèques Qt inutilisées (QML, Quick, PDF, clavier virtuel, OpenGL logiciel : environ 38 Mo), écrit les informations de version de l’exécutable, puis lance `SMFTP.exe --smoke-test` : une bibliothèque manquante fait échouer le build.
 
@@ -131,10 +137,18 @@ Résultat : `dist/SMFTP/SMFTP.exe`, avec les licences dans `dist/SMFTP/licenses`
 .\package.ps1 -Target store -IdentityName <Package/Identity/Name> -Publisher "CN=<…>" -PublisherDisplayName <nom d’éditeur>
 ```
 
-- L’installeur ([installer/smftp.iss](installer/smftp.iss)) installe par utilisateur, sans droits administrateur, et conserve profils et mots de passe à la désinstallation. Il nécessite Inno Setup 6 (`winget install JRSoftware.InnoSetup`).
+- L’installeur ([installer/smftp.iss](installer/smftp.iss)) installe par utilisateur, sans droits administrateur, et conserve profils et mots de passe à la désinstallation. Il nécessite Inno Setup 6 (`winget install JRSoftware.InnoSetup`). Lancé sur une installation existante, il la met à jour dans le même dossier : `AppId` ne doit jamais changer, `AppMutex=SMFTP-Instance` le fait attendre la fermeture de SMFTP (qui détient ce mutex nommé tant qu’il tourne), et seul le dossier du programme est remplacé ; les données de `%APPDATA%\SMFTP` et du Gestionnaire d’identification ne sont jamais touchées.
+- `package.ps1 -Target github` (ou `uptodown`) écrit aussi `dist/SHA256SUMS.txt` (lignes `<sha256>  <nom>` pour l’installeur et l’archive), après la signature : SMFTP refuse d’installer une mise à jour absente de ce fichier ou dont l’empreinte diffère.
 - Sans signature, Windows SmartScreen avertit au premier lancement de l’installeur Uptodown / GitHub. Le paquet MSIX n’a pas besoin de signature : le Store le signe.
 - Politique de confidentialité exigée par le Store : [docs/CONFIDENTIALITE.md](docs/CONFIDENTIALITE.md) (français) et [docs/PRIVACY.md](docs/PRIVACY.md) (anglais). Indiquer leur adresse publique dans Partner Center, pour chaque langue de la fiche.
 - Langues à déclarer sur les fiches : français et anglais.
+
+### Publier une version
+
+1. Changer `CURRENT_VERSION` dans [smftp/workers/updates.py](smftp/workers/updates.py) (source unique : exécutable, installeur, MSIX) et la version en tête de ce README ; rédiger `docs/RELEASE_NOTES_<version>.md` (français et anglais).
+2. Lancer les tests, puis `.\package.ps1 -Target github -CertificateThumbprint <…>` : `dist/` contient `SMFTP-<version>-setup-x64.exe`, `SMFTP-<version>-windows-x64.zip` et `SHA256SUMS.txt`.
+3. Pousser `main`, puis `powershell -ExecutionPolicy Bypass -File .\tools\publish_release.ps1` (option `-Draft` pour relire avant publication). Le script revérifie l’installeur et l’archive contre `SHA256SUMS.txt` et crée la release `v<version>` avec `gh release create` (GitHub CLI authentifié). Les copies installées la proposeront au plus tard le lendemain. Les noms de fichiers ne doivent pas changer : SMFTP cherche exactement `SMFTP-<version>-setup-x64.exe` et `SHA256SUMS.txt` dans la release.
+4. Uptodown : envoyer le même installeur ; Microsoft Store : `.\package.ps1 -Target store …` et soumettre le MSIX dans Partner Center.
 
 ## Licence
 

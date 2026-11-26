@@ -67,6 +67,15 @@ class SettingsDialog(QDialog):
                 if distribution() == "store" else
                 self.tr("Disponible dans la version installée de SMFTP."))
         layout.addRow(self.autostart)
+        from smftp.workers.updates import AUTO_CHECK_KEY, checks_for_updates
+        self.auto_updates = QCheckBox(self.tr("Vérifier automatiquement les mises à jour (une fois par jour, au démarrage)"))
+        if checks_for_updates():
+            self.auto_updates.setChecked(settings.value(AUTO_CHECK_KEY, True, type=bool))
+        else:
+            self.auto_updates.setChecked(False)
+            self.auto_updates.setEnabled(False)
+            self.auto_updates.setToolTip(self.tr("Version Microsoft Store : les mises à jour sont installées par le Store."))
+        layout.addRow(self.auto_updates)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -105,6 +114,9 @@ class SettingsDialog(QDialog):
         settings.setValue("auto_reconnect", self.reconnect.isChecked())
         settings.setValue("notifications", self.notifications.isChecked())
         settings.setValue("tray_on_close", self.tray.isChecked())
+        from smftp.workers.updates import AUTO_CHECK_KEY, checks_for_updates
+        if checks_for_updates():
+            settings.setValue(AUTO_CHECK_KEY, self.auto_updates.isChecked())
         from smftp.utils import autostart
         if autostart.supported() and self.autostart.isChecked() != autostart.is_enabled():
             try:

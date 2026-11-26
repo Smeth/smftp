@@ -41,6 +41,11 @@ SolidCompression=yes
 WizardStyle=modern
 CloseApplications=yes
 RestartApplications=no
+; SMFTP holds this named mutex while it runs (main.py): setup and uninstall wait for it to close.
+AppMutex=SMFTP-Instance
+; Installing a new version over an existing one keeps the folder chosen the first time.
+UsePreviousAppDir=yes
+UsePreviousTasks=yes
 
 [Languages]
 ; The installer speaks the Windows display language (English otherwise).
@@ -49,6 +54,11 @@ Name: "french"; MessagesFile: "compiler:Languages\French.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+[InstallDelete]
+; Update: libraries of the previous version must not mix with the new ones. Only the
+; program folder is cleaned; user data (%APPDATA%\SMFTP, Credential Manager) is never touched.
+Type: filesandordirs; Name: "{app}\_internal"
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
