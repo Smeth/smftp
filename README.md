@@ -133,7 +133,7 @@ Résultat : `dist/SMFTP/SMFTP.exe`, avec les licences dans `dist/SMFTP/licenses`
 
 - L’installeur ([installer/smftp.iss](installer/smftp.iss)) installe par utilisateur, sans droits administrateur, et conserve profils et mots de passe à la désinstallation. Il nécessite Inno Setup 6 (`winget install JRSoftware.InnoSetup`).
 - Sans signature, Windows SmartScreen avertit au premier lancement de l’installeur Uptodown / GitHub. Le paquet MSIX n’a pas besoin de signature : le Store le signe.
-- Politique de confidentialité exigée par le Store : [docs/CONFIDENTIALITE.md](docs/CONFIDENTIALITE.md). Indiquer son adresse publique dans Partner Center.
+- Politique de confidentialité exigée par le Store : [docs/CONFIDENTIALITE.md](docs/CONFIDENTIALITE.md) (français) et [docs/PRIVACY.md](docs/PRIVACY.md) (anglais). Indiquer leur adresse publique dans Partner Center, pour chaque langue de la fiche.
 - Langues à déclarer sur les fiches : français et anglais.
 
 ## Licence
