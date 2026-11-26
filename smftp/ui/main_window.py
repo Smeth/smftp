@@ -16,6 +16,7 @@ from smftp.workers.transfer import Transfer
 from smftp.core.errors import ErrorInfo, describe_error, redact
 from smftp.utils.profiles import profile_for, merge_profiles, normalize_profile, store_credential, identity, read_profiles, XMLCorrectionRequired
 from smftp.ui.workspace_features import WorkspaceFeatures
+from smftp.ui.navigation import NavigationFeatures
 from smftp.models.entries import protocol_label, is_terminal, uses_ssh
 from smftp.ui.icons import resize_within_screen
 
@@ -29,7 +30,22 @@ def system_prefers_dark() -> bool:
         return True
 
 
-class MainWindow(WorkspaceFeatures, QMainWindow):
+def scale_font_sizes(sheet: str, base_points: float | None = None) -> str:
+    """Theme sizes are written in pixels for the default Windows text size (12 px = 9 pt).
+    Turn each "font-size: Npx" into points scaled like the system font, so that the
+    text follows Windows' text size setting and its display scaling."""
+    import re
+    if base_points is None:
+        base_points = QApplication.font().pointSizeF()
+    factor = base_points / 9.0 if base_points and base_points > 0 else 1.0
+
+    def points(match):
+        value = float(match.group(1)) * 0.75 * factor
+        return f"font-size: {value:.1f}pt"
+    return re.sub(r"font-size:\s*(\d+(?:\.\d+)?)px", points, sheet)
+
+
+class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
     connect_requested = Signal(object)
     list_requested = Signal(str)
     disconnect_requested = Signal()
@@ -392,6 +408,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         except (OSError, ValueError, TypeError) as error:
             self.on_error(describe_error(error, connection, self.tr("Enregistrement du profil")))
             return False
+        if original:
+            self.move_bookmarks(identity(original), connection.identity)
         try:
             store_credential(connection)
             if original and identity(original) != connection.identity:
@@ -448,6 +466,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             self.sites = remaining
             self.refresh_sites()
             self.forget_recent(connection.identity)
+            self.forget_bookmarks(connection.identity)
         except Exception:
             self.on_error(self.tr("Suppression incomplète : vérifiez l’accès au coffre-fort et au fichier des profils. Le profil est conservé pour pouvoir réessayer."))
 
@@ -706,8 +725,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         settings.setValue("layout/geometry", self.saveGeometry())
         for name in self.LAYOUT_SPLITTERS:
             settings.setValue(f"layout/{name}", getattr(self, name).saveState())
-        settings.setValue("layout/local_columns", self.local.view.header().saveState())
-        settings.setValue("layout/remote_columns", self.remote.view.header().saveState())
+        settings.setValue("layout/local_columns", self.local.header_state())
+        settings.setValue("layout/remote_columns", self.remote.header_state())
         for action, key in ((self.local_hidden_action, "local_hidden"), (self.remote_hidden_action, "remote_hidden"),
                             (self.icon_view_action, "icon_view"), (self.vertical_action, "vertical_panels")):
             settings.setValue(f"layout/{key}", action.isChecked())
@@ -811,10 +830,15 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                     current = Path(selected[0][0]).lstat().st_mode & 0o7777
                 except OSError:
                     current = None
-            dialog = PermissionsDialog(self, current, selected[0][1], posixpath.basename(selected[0][0]) if panel.remote else Path(selected[0][0]).name)
+            dialog = PermissionsDialog(self, current, selected[0][1], posixpath.basename(selected[0][0]) if panel.remote else Path(selected[0][0]).name,
+                                       recursive=panel.remote and selected[0][1])
             if not dialog.exec():
                 return
             arguments = [selected[0][0], dialog.mode()]
+            if panel.remote and dialog.recursive():
+                operation = "chmod_recursive"
+                arguments += list(dialog.recursive())
+                self.activity_tabs.setCurrentWidget(self.log_panel)
         else:
             return
         if panel.remote:
@@ -1424,7 +1448,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         name = "dark" if self.dark else "light"
         path = Path(__file__).resolve().parents[2] / "resources" / "themes" / f"{name}.qss"
         # Image URLs in the style sheet point to this folder, wherever SMFTP is installed.
-        self.setStyleSheet(path.read_text(encoding="utf-8").replace("@THEMES@", path.parent.as_posix()))
+        sheet = path.read_text(encoding="utf-8").replace("@THEMES@", path.parent.as_posix())
+        self.setStyleSheet(scale_font_sizes(sheet))
         from PySide6.QtGui import QColor, QPalette
         palette = QApplication.palette()
         palette.setColor(QPalette.ColorRole.Link, QColor("#93b6ff" if self.dark else "#1f5fd1"))

@@ -179,6 +179,7 @@ class TurnResult:
     text: str = ""
     stopped: str = ""  # "", "refusal", "max_tokens", "rounds", "cancelled"
     tool_calls: list = field(default_factory=list)
+    from_tool: bool = False  # text is the last tool report (French), not the model's words
 
 
 class ProviderError(Exception):
@@ -648,12 +649,14 @@ class OllamaConversation(BaseConversation):
                     self.messages.append({"role": "tool", "tool_name": name,
                                           "content": ("Erreur : " if is_error else "") + output})
                     # Shown to the user if the model stops without a word after acting.
-                    last_report = (tr("Erreur : ") if is_error else "") + output
+                    # Kept in French like the model's copy; the window translates it for display.
+                    last_report = ("Erreur : " if is_error else "") + output
                 continue
             result.text = answer
             if not answer and result.tool_calls and result.tool_calls[-1][0] in MUTATING:
                 # Small models sometimes stop without a word after acting: show what SMFTP did.
                 result.text = last_report
+                result.from_tool = True
             if reply.get("done_reason") == "length":
                 result.stopped = "max_tokens"
             return result

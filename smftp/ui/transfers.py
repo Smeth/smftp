@@ -381,18 +381,33 @@ class Transfers(QWidget):
                 ("Écraser", "overwrite", "Remplacer le fichier existant."),
                 ("Ignorer", "skip", "Garder le fichier existant et passer au suivant."),
                 ("Renommer", "rename", "Copier sous un autre nom ; le fichier existant est gardé."),
-                ("Reprendre", "resume", "Continuer une copie interrompue de ce même fichier."),
-                ("Écraser si plus récent", "newer", "Remplacer seulement si le fichier à copier est plus récent."),
-                ("Écraser si la taille diffère", "different", "Remplacer seulement si les tailles sont différentes.")]:
+                ("Reprendre", "resume", "Continuer une copie interrompue de ce même fichier.")]:
             button = box.addButton(self.tr(label), QMessageBox.ButtonRole.ActionRole)
             button.setToolTip(self.tr(tip))
             choices[button] = value
-        from PySide6.QtWidgets import QCheckBox
+        # The conditional choices share one button with a menu: the box stays narrow
+        # (seven buttons did not fit at 150 % in English).
+        from PySide6.QtWidgets import QCheckBox, QMenu, QPushButton
+        picked = []
+        conditional = QPushButton(self.tr("Écraser si…"))
+        conditional.setToolTip(self.tr("Remplacer seulement sous condition : fichier plus récent ou taille différente."))
+        menu = QMenu(conditional)
+        for label, value, tip in [
+                ("Si le fichier à copier est plus récent", "newer", "Remplacer seulement si le fichier à copier est plus récent."),
+                ("Si la taille diffère", "different", "Remplacer seulement si les tailles sont différentes.")]:
+            action = menu.addAction(self.tr(label))
+            action.setToolTip(self.tr(tip))
+            action.setData(value)
+            action.triggered.connect(lambda checked=False, v=value: (picked.append(v), box.done(0)))
+        menu.setToolTipsVisible(True)
+        conditional.setMenu(menu)
+        box.addButton(conditional, QMessageBox.ButtonRole.ActionRole)
+        self.conflict_menu = menu  # Reached by the tests.
         all_files = QCheckBox(self.tr("Appliquer aux autres conflits de ce transfert"))
         box.setCheckBox(all_files)
         box.exec()
         worker = record["worker"]
-        worker.choice = choices.get(box.clickedButton(), "skip")
+        worker.choice = picked[-1] if picked else choices.get(box.clickedButton(), "skip")
         # A single-file task has only this conflict: keep the answer so that a
         # resumed or restored copy does not ask it again.
         if all_files.isChecked() or not record["task"].directory:

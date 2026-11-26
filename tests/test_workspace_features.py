@@ -36,7 +36,7 @@ def test_saved_profile_connects_without_dialog(monkeypatch):
         assert started[0].password == "stored-secret"
         assert started[0].remote_directory == "/www"
         titles = [a.text().replace("&", "") for a in window.menuBar().actions()]
-        assert titles == ["Fichier", "Édition", "Affichage", "Serveurs", "Transferts", "Outils", "Aide"]
+        assert titles == ["Fichier", "Édition", "Affichage", "Serveurs", "Signets", "Transferts", "Outils", "Aide"]
     finally:
         finish_window(window)
 

@@ -163,21 +163,88 @@ def load_sites(problems: list | None = None) -> list[dict]:
     return merge_profiles([], clean)
 
 
-def save_sites(sites: list[dict]) -> None:
-    from smftp.utils.profiles import normalize_profile
+def write_json_atomically(path: Path, data, prefix: str) -> None:
+    """Write to a temporary file of the same folder, then replace: never a half-written file."""
     import os
     import tempfile
-    clean = [normalize_profile(site) for site in sites]
-    path = data_dir() / "sites.json"
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
-                                         prefix="sites-", suffix=".tmp", delete=False) as stream:
+                                         prefix=prefix, suffix=".tmp", delete=False) as stream:
             temporary = Path(stream.name)
-            json.dump(clean, stream, ensure_ascii=False, indent=2)
+            json.dump(data, stream, ensure_ascii=False, indent=2)
             stream.flush()
             os.fsync(stream.fileno())
         temporary.replace(path)
     finally:
         if temporary and temporary.exists():
             temporary.unlink()
+
+
+def save_sites(sites: list[dict]) -> None:
+    from smftp.utils.profiles import normalize_profile
+    clean = [normalize_profile(site) for site in sites]
+    write_json_atomically(data_dir() / "sites.json", clean, "sites-")
+
+
+def normalize_bookmark(item) -> dict | None:
+    """{name, local, remote} with non-empty text values, or None."""
+    if not isinstance(item, dict):
+        return None
+    values = {key: item.get(key) for key in ("name", "local", "remote")}
+    if not all(isinstance(value, str) and value.strip() for value in values.values()):
+        return None
+    return {"name": values["name"].strip(), "local": values["local"], "remote": values["remote"]}
+
+
+def load_bookmarks(problems: list | None = None) -> dict[str, list[dict]]:
+    """Folder bookmarks by profile identity: {identity: [{name, local, remote}]}.
+
+    A file that cannot be read completely is kept aside under another name, so that
+    the next save cannot erase the bookmarks it holds."""
+    import shutil
+    import time
+    path = data_dir() / "bookmarks.json"
+    if problems is None:
+        problems = []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        raw = None
+    clean = {}
+    dropped = 0
+    if isinstance(raw, dict):
+        for key, items in raw.items():
+            if not isinstance(key, str) or not isinstance(items, list):
+                dropped += 1
+                continue
+            for item in items:
+                bookmark = normalize_bookmark(item)
+                if bookmark is None:
+                    dropped += 1
+                else:
+                    clean.setdefault(key, []).append(bookmark)
+        if not dropped:
+            return clean
+    backup = path.with_name(f"bookmarks.illisible-{time.strftime('%Y%m%d-%H%M%S')}.json")
+    try:
+        shutil.copy2(path, backup)
+        kept = " " + tr("Une copie du fichier d’origine a été conservée sous {path}.").format(path=backup)
+    except OSError:
+        kept = ""
+    if not isinstance(raw, dict):
+        problems.append(tr("Le fichier des signets (bookmarks.json) est illisible : aucun signet n’a pu être chargé.") + kept)
+    else:
+        problems.append(tr("{count} signet(s) illisible(s) dans bookmarks.json ont été ignorés.").format(count=dropped) + kept)
+    return clean
+
+
+def save_bookmarks(bookmarks: dict[str, list[dict]]) -> None:
+    clean = {}
+    for key, items in bookmarks.items():
+        kept = [bookmark for bookmark in map(normalize_bookmark, items) if bookmark]
+        if kept:
+            clean[key] = kept
+    write_json_atomically(data_dir() / "bookmarks.json", clean, "bookmarks-")

@@ -26,6 +26,8 @@ def test_conflict_question_shows_both_files(tmp_path, monkeypatch):
     def fake_exec(box):
         shown["text"], shown["info"] = box.text(), box.informativeText()
         shown["buttons"] = [button.text() for button in box.buttons()]
+        shown["conditions"] = [(action.text(), action.data()) for button in box.buttons() if button.menu()
+                               for action in button.menu().actions()]
         return 0
     monkeypatch.setattr(QMessageBox, "exec", fake_exec)
     transfers = Transfers()
@@ -37,8 +39,28 @@ def test_conflict_question_shows_both_files(tmp_path, monkeypatch):
     worker.copy_file(FakeClient({"/r/page.html": b"server"}), tmp_path / "page.html", "/r/page.html")
     assert "page.html" in shown["text"]
     assert "sur le serveur" in shown["info"] and "sur ce PC" in shown["info"] and "13 o" in shown["info"]
-    assert "Écraser si plus récent" in shown["buttons"] and "Écraser si la taille diffère" in shown["buttons"]
+    # Five buttons; the conditional choices are grouped behind "Écraser si…".
+    assert shown["buttons"] == ["Écraser", "Ignorer", "Renommer", "Reprendre", "Écraser si…"]
+    assert [value for _, value in shown["conditions"]] == ["newer", "different"]
     assert (tmp_path / "page.html").read_bytes() == b"local version"  # No button clicked: skipped.
+
+
+def test_conflict_menu_choice_reaches_the_worker(tmp_path, monkeypatch):
+    from smftp.ui.transfers import Transfers
+    app()
+    (tmp_path / "page.html").write_bytes(b"local version")
+
+    def choose_if_different(box):
+        button = next(button for button in box.buttons() if button.menu())
+        next(action for action in button.menu().actions() if action.data() == "different").trigger()
+        return 0
+    monkeypatch.setattr(QMessageBox, "exec", choose_if_different)
+    transfers = Transfers()
+    transfers.pause_all()
+    record = transfers.add(Transfer(Connection("h.test", "u", "SFTP"), str(tmp_path / "page.html"), "/r/page.html", False))
+    transfers.resolve_conflict(record, "page.html")
+    assert record["worker"].choice == "different"
+    assert record["task"].conflict == "different"  # Single file: the answer is kept.
 
 
 def test_queue_shows_destination_and_size(tmp_path):

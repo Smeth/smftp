@@ -83,6 +83,10 @@ class LocalModel(QFileSystemModel):
                 return self.tr("Dossier")
             suffix = Path(self.fileName(index)).suffix.lstrip(".")
             return self.tr("Fichier %s") % suffix.upper() if suffix else self.tr("Fichier")
+        # Same date format as the server panel.
+        if role == Qt.ItemDataRole.DisplayRole and index.column() == 3:
+            modified = self.lastModified(index)
+            return modified.toPython().strftime(self.tr("%d/%m/%Y %H:%M")) if modified.isValid() else ""
         return super().data(index, role)
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
@@ -118,6 +122,10 @@ class Explorer(QWidget):
     dropped = Signal(object, str, bool)
     context_requested = Signal(object)
     file_opened = Signal()
+    path_changed = Signal(str)  # The folder shown (also emitted again on refresh).
+
+    # Narrow panel: these columns are hidden in this order when the name would get less room.
+    NAME_ROOM = 140
 
     def __init__(self, remote: bool = False):
         super().__init__()
@@ -204,10 +212,14 @@ class Explorer(QWidget):
         self.view.setUniformRowHeights(True)
         header = self.view.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        # The name takes the free room; the last column keeps its own width (also when another
+        # column is hidden in a narrow panel).
+        header.setStretchLastSection(False)
         # The name keeps room in a narrow panel (assistant open). The other columns fit their
         # content once, at the first listing, and stay resizable by hand afterwards.
         header.setMinimumSectionSize(60)
         self.columns_fitted = False
+        self.auto_hidden = {}  # column -> width it had before the panel became too narrow
         self.view.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self.stack = QStackedWidget()
         self.stack.addWidget(self.view)
@@ -359,6 +371,7 @@ class Explorer(QWidget):
         self.crumbs.addStretch()
         self.fit_crumbs()
         self.update_navigation()
+        self.path_changed.emit(path)
 
     def fit_crumbs(self) -> None:
         """Show the deepest folders that fit; the hidden ones stay reachable with the ↑ button."""
@@ -470,7 +483,50 @@ class Explorer(QWidget):
             return
         self.columns_fitted = True
         for column in range(1, self.view.header().count()):
-            self.view.resizeColumnToContents(column)
+            if not self.view.header().isSectionHidden(column):
+                self.view.resizeColumnToContents(column)
+        self.fit_narrow()
+
+    def narrow_order(self) -> list[int]:
+        """Columns hidden first when the panel is narrow: Permissions, then Type."""
+        return [4, 2] if self.remote else [2]
+
+    def fit_narrow(self) -> None:
+        """Hide Permissions then Type when the name would keep less than NAME_ROOM pixels;
+        show them again, with the width they had, once the room is back."""
+        header = self.view.header()
+        available = self.view.viewport().width()
+        if available <= 0 or header.count() < 3:
+            return
+
+        def others():
+            return sum(header.sectionSize(c) for c in range(1, header.count()) if not header.isSectionHidden(c))
+        for column in reversed(self.narrow_order()):
+            if column not in self.auto_hidden:
+                continue
+            if available - others() - self.auto_hidden[column] < self.NAME_ROOM:
+                break
+            width = self.auto_hidden.pop(column)
+            header.showSection(column)
+            header.resizeSection(column, width)
+        for column in self.narrow_order():
+            if available - others() >= self.NAME_ROOM:
+                break
+            if column < header.count() and not header.isSectionHidden(column):
+                self.auto_hidden[column] = header.sectionSize(column)
+                header.hideSection(column)
+
+    def header_state(self):
+        """Column layout to remember, with the columns hidden for lack of room shown."""
+        header = self.view.header()
+        hidden = dict(self.auto_hidden)
+        for column, width in hidden.items():
+            header.showSection(column)
+            header.resizeSection(column, width)
+        state = header.saveState()
+        for column in hidden:
+            header.hideSection(column)
+        return state
 
     def set_icon_mode(self, enabled):
         self.stack.setCurrentWidget(self.icons if enabled else self.view)
@@ -522,6 +578,8 @@ class Explorer(QWidget):
         return [(self.model.filePath(i), self.model.isDir(i)) for i in self.view.selectionModel().selectedRows(0)]
 
     def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Resize and watched is self.view.viewport():
+            self.fit_narrow()
         if event.type() in (QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.Drop) and watched in (self.view.viewport(), self.icons.viewport()):
             mime = event.mimeData()
             if mime.hasUrls() or mime.hasFormat("application/x-smftp-remote"):

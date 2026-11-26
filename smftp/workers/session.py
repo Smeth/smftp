@@ -82,7 +82,8 @@ class Session(QObject):
     @Slot(str, object)
     def operate(self, operation, arguments):
         self.operation = {"mkdir": tr("Création de dossier"), "rename": tr("Déplacement / renommage"), "replace": tr("Remplacement"),
-                          "remove": tr("Suppression"), "chmod": tr("Modification des permissions")}.get(operation, operation)
+                          "remove": tr("Suppression"), "chmod": tr("Modification des permissions"),
+                          "chmod_recursive": tr("Modification récursive des permissions")}.get(operation, operation)
         if not self.client:
             self.failed.emit(tr("Connectez d’abord un serveur."))
             return
@@ -94,6 +95,8 @@ class Session(QObject):
                 self.client.move(*arguments, replace=True)
             elif operation in ("mkdir", "remove", "chmod"):
                 getattr(self.client, operation)(*arguments)
+            elif operation == "chmod_recursive":
+                self.chmod_tree(*arguments)
             else:
                 raise ValueError
             self.operated.emit()
@@ -101,6 +104,51 @@ class Session(QObject):
             self.move_conflict.emit(error.source, error.target)
         except Exception as error:
             self.report(error)
+
+    def chmod_tree(self, path, mode, folder_mode, file_mode):
+        """Change a remote folder and everything below it. Symbolic links (permissions
+        starting with "l") are neither changed nor followed. Each folder is listed before
+        its own mode changes, so a mode without read access does not stop the walk.
+        Progress and errors go to the log; one failure does not stop the others."""
+        import posixpath
+        changed = errors = links = reported = 0
+        stack = [(path, mode)]
+        while stack:
+            folder, folder_target = stack.pop()
+            try:
+                entries = self.client.listdir(folder)
+            except Exception as error:
+                errors += 1
+                self.progress.emit(tr("Permissions : lecture impossible de {path} ({error}).").format(path=folder, error=error))
+                entries = []
+            for entry in entries:
+                if entry.name in (".", ".."):
+                    continue
+                if (entry.permissions or "").startswith("l"):
+                    links += 1
+                    continue
+                child = posixpath.join(folder, entry.name)
+                if entry.is_dir:
+                    stack.append((child, folder_mode))
+                    continue
+                try:
+                    self.client.chmod(child, file_mode)
+                    changed += 1
+                except Exception as error:
+                    errors += 1
+                    self.progress.emit(tr("Permissions : échec sur {path} ({error}).").format(path=child, error=error))
+            try:
+                self.client.chmod(folder, folder_target)
+                changed += 1
+            except Exception as error:
+                errors += 1
+                self.progress.emit(tr("Permissions : échec sur {path} ({error}).").format(path=folder, error=error))
+            if changed - reported >= 100:
+                reported = changed
+                self.progress.emit(tr("Permissions : {count} élément(s) modifié(s)…").format(count=changed))
+        self.progress.emit(tr("Permissions de {path} : {changed} élément(s) modifié(s), {errors} erreur(s), "
+                              "{links} lien(s) symbolique(s) ignoré(s).").format(
+            path=path, changed=changed, errors=errors, links=links))
 
     @Slot(str, str, str)
     def inspect_path(self, token, path, identity):

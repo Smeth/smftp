@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QWidget, QFrame, QVBoxLayout, QHBoxLayout, QFormL
                                QCheckBox, QMenu)
 from smftp.core import assistant as A
 from smftp.core import schedule as S
-from smftp.i18n import tr
+from smftp.i18n import tr, N_
 from smftp.ui.icons import icon_button, make_icon, recolor, theme_of
 
 KEY_SERVICE, KEY_NAME = "SMFTP", "assistant:anthropic-api-key"
@@ -26,6 +26,35 @@ TOOL_LABELS = {
 SUGGESTIONS = ["Synchronise mon site chaque soir à 23 h", "Pourquoi mes derniers transferts ont échoué ?",
                "Quelles tâches sont prévues cette semaine ?", "Télécharge les rapports chaque lundi à 8 h"]
 LIST_LIMIT = 200
+# What a mutating tool tells the model, in French. When a local model stops without a word
+# after acting, this report is shown to the user, translated only at display.
+REPORT_CREATED = N_("Tâche créée (task_id {id}). Prochaine exécution : {next}.")
+REPORT_CREATED_NO_SECRET = N_("Tâche créée (task_id {id}). Prochaine exécution : {next}. "
+                              "Attention : le mot de passe de ce profil n’est pas mémorisé, la tâche échouera.")
+REPORT_UPDATED = N_("Tâche modifiée. Prochaine exécution : {next}.")
+REPORT_STARTED = N_("Tâche lancée : {status} — {detail}. Le résultat final apparaîtra dans l’historique.")
+REPORT_TEMPLATES = [REPORT_CREATED_NO_SECRET, REPORT_CREATED, REPORT_UPDATED, REPORT_STARTED]
+NO_RUN = "aucune"
+
+
+def translate_report(text: str) -> str:
+    """A tool report (French, as the model received it) in the interface language."""
+    import re
+    prefix = ""
+    if text.startswith("Erreur : "):
+        prefix, text = tr("Erreur : "), text[len("Erreur : "):]
+    for template in REPORT_TEMPLATES:
+        pattern = "^" + re.sub(r"\\\{(\w+)\\\}", r"(?P<\1>.*?)", re.escape(template)) + "$"
+        match = re.match(pattern, text, re.DOTALL)
+        if match:
+            values = match.groupdict()
+            if values.get("next") == NO_RUN:
+                values["next"] = tr("aucune")
+            for key in ("status", "detail"):
+                if key in values:
+                    values[key] = tr(values[key])
+            return prefix + tr(template).format(**values)
+    return prefix + tr(text)
 
 
 def read_api_key():
@@ -190,7 +219,7 @@ class Toolbox(QObject):
                          "action": S.summary(task), "quand": S.describe(task),
                          "profil": self.scheduler.profile_label(task["profile"]),
                          "prochaine_execution": task["next_run"] or None,
-                         "dernier_resultat": f"{last['status']} le {last['started']} : {last.get('detail', '')}" if last else None,
+                         "dernier_resultat": f"{last['status']} le {last['started']} : {S.detail_french(last)}" if last else None,
                          "en_cours": self.scheduler.running(task["id"]),
                          "reglages": A.task_to_tool(task)})
         return json.dumps(rows, ensure_ascii=False) if rows else "Aucune tâche planifiée."
@@ -229,9 +258,9 @@ class Toolbox(QObject):
                             self.task_text(clean)):
             return "L’utilisateur a refusé de créer cette tâche."
         created = self.scheduler.add_task(task)
-        return (f"Tâche créée (task_id {created['id']}). Prochaine exécution : {created['next_run'] or 'aucune'}. "
-                + ("Attention : le mot de passe de ce profil n’est pas mémorisé, la tâche échouera."
-                   if not self.scheduler.profiles()[created["profile"]].get("remember") else ""))
+        template = (REPORT_CREATED_NO_SECRET if not self.scheduler.profiles()[created["profile"]].get("remember")
+                    else REPORT_CREATED)
+        return template.format(id=created["id"], next=created["next_run"] or NO_RUN)
 
     def tool_update_scheduled_task(self, task_id, **data):
         current = self.scheduler.store.find(task_id)
@@ -246,7 +275,7 @@ class Toolbox(QObject):
                             + self.task_text(clean)):
             return "L’utilisateur a refusé cette modification."
         updated = self.scheduler.update_task(task_id, task)
-        return f"Tâche modifiée. Prochaine exécution : {updated['next_run'] or 'aucune'}."
+        return REPORT_UPDATED.format(next=updated["next_run"] or NO_RUN)
 
     def tool_delete_scheduled_task(self, task_id):
         task = self.scheduler.store.find(task_id)
@@ -267,7 +296,7 @@ class Toolbox(QObject):
             return "L’utilisateur a refusé de lancer la tâche."
         self.scheduler.run_now(task_id)
         row = self.scheduler.store.history[-1]
-        return f"Tâche lancée : {row['status']} — {row.get('detail', '')}. Le résultat final apparaîtra dans l’historique."
+        return REPORT_STARTED.format(status=row["status"], detail=S.detail_french(row))
 
     def tool_queue_transfer(self, profile, direction, local, remote, directory):
         from smftp.workers.transfer import Transfer
@@ -1119,7 +1148,8 @@ class AssistantPanel(QFrame):
             self.end_stream()
         elif result.text:
             self.end_stream()
-            self.append("assistant", result.text)
+            # A silent local model after an action: SMFTP's own report, translated here only.
+            self.append("assistant", translate_report(result.text) if result.from_tool else result.text)
         else:
             self.end_stream()
         notes = {"refusal": "L’assistant a refusé cette demande. Reformulez-la.",
