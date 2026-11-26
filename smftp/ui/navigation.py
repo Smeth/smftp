@@ -5,13 +5,15 @@ from pathlib import Path
 from urllib.parse import quote
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import (QWidget, QHBoxLayout, QLabel, QLineEdit, QSpinBox, QPushButton, QToolButton,
+from PySide6.QtWidgets import (QWidget, QHBoxLayout, QLabel, QLineEdit, QSpinBox, QPushButton, QToolButton, QComboBox,
                                QCompleter, QDialog, QVBoxLayout, QTreeWidget, QTreeWidgetItem, QInputDialog,
                                QMessageBox, QHeaderView)
-from smftp.models.entries import Connection, DEFAULT_PORTS, is_terminal
+from smftp.models.entries import Connection, DEFAULT_PORTS, is_terminal, protocol_label
 from smftp.utils.storage import load_bookmarks, save_bookmarks
 
 QUICK_HISTORY = 10
+QUICK_PROTOCOLS = ("FTP", "FTPS", "FTPSI", "SFTP", "SSH")
+QUICK_DEFAULT_PROTOCOL = "FTP"  # Quick connect starts on FTP; the list offers the others.
 # Stored protocol -> URL scheme of the quick connect history (see connection_dialog.SCHEMES).
 SCHEME_OF = {"SFTP": "sftp", "SSH": "ssh", "FTP": "ftp", "FTPSI": "ftps", "FTPS": "ftpes"}
 
@@ -37,11 +39,22 @@ class QuickConnectBar(QWidget):
         row = QHBoxLayout(self)
         row.setContentsMargins(12, 6, 12, 6)
         row.setSpacing(6)
+        self.protocol = QComboBox()
+        for value in QUICK_PROTOCOLS:
+            self.protocol.addItem(protocol_label(value), value)
+        self.protocol.setCurrentIndex(self.protocol.findData(QUICK_DEFAULT_PROTOCOL))
+        # Wide enough for the longest label ("FTPS implicite", "SSH (terminal)").
+        self.protocol.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.protocol.setAccessibleName(self.tr("Protocole"))
+        self.protocol.setToolTip(self.tr("Protocole de la connexion. Une adresse complète (sftp://…) le choisit "
+                                         "d’elle-même."))
         self.host = QLineEdit()
-        self.host.setPlaceholderText(self.tr("hôte ou sftp://utilisateur@hôte:22/dossier"))
+        self.host.setPlaceholderText(self.tr("hôte ou ftp://utilisateur@hôte:21/dossier"))
         self.host.setAccessibleName(self.tr("Hôte"))
-        self.host.setToolTip(self.tr("Nom d’hôte, adresse IP ou adresse complète (sftp://, ftp://, ftps://, ftpes://). "
-                                     "SFTP par défaut."))
+        self.host.setToolTip(self.tr("Nom d’hôte, adresse IP ou adresse complète (ftp://, ftps://, ftpes://, sftp://). "
+                                     "Sans préfixe, le protocole choisi à gauche est utilisé."))
+        # An address typed or picked from the history with its scheme sets the protocol list.
+        self.host.textChanged.connect(self.follow_address)
         self.completer = QCompleter([], self.host)
         self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.completer.setFilterMode(Qt.MatchFlag.MatchContains)
@@ -57,10 +70,12 @@ class QuickConnectBar(QWidget):
         self.port.setRange(0, 65535)
         self.port.setSpecialValueText(self.tr("auto"))
         self.port.setAccessibleName(self.tr("Port"))
-        self.port.setToolTip(self.tr("« auto » : port de l’adresse, sinon port habituel du protocole (22 en SFTP)."))
+        self.port.setToolTip(self.tr("« auto » : port de l’adresse, sinon port habituel du protocole choisi "
+                                     "(21 en FTP et FTPS explicite, 990 en FTPS implicite, 22 en SFTP et SSH)."))
         self.button = QPushButton(self.tr("Connexion"))
         self.button.setObjectName("compact")
-        for label, field, stretch in ((self.tr("Hôte"), self.host, 3), (self.tr("Utilisateur"), self.user, 2),
+        for label, field, stretch in ((self.tr("Protocole"), self.protocol, 0),
+                                      (self.tr("Hôte"), self.host, 3), (self.tr("Utilisateur"), self.user, 2),
                                       (self.tr("Mot de passe"), self.password, 2), (self.tr("Port"), self.port, 0)):
             caption = QLabel(label)
             caption.setObjectName("muted")
@@ -70,6 +85,15 @@ class QuickConnectBar(QWidget):
         row.addWidget(self.button)
         for field in (self.host, self.user, self.password):
             field.returnPressed.connect(self.button.click)
+
+    def protocol_value(self) -> str:
+        return self.protocol.currentData() or QUICK_DEFAULT_PROTOCOL
+
+    def follow_address(self, text):
+        from smftp.ui.connection_dialog import parse_address
+        protocol = parse_address(text).get("protocol") if "://" in text else None
+        if protocol in QUICK_PROTOCOLS and protocol != self.protocol_value():
+            self.protocol.setCurrentIndex(self.protocol.findData(protocol))
 
     def set_history(self, addresses):
         self.completer.model().setStringList(list(addresses))
@@ -311,12 +335,13 @@ class NavigationFeatures:
 
     def quick_connection(self):
         """The Connection described by the bar, or an error message."""
-        from smftp.ui.connection_dialog import parse_address, DEFAULT_PROTOCOL
+        from smftp.ui.connection_dialog import parse_address
         bar = self.quick_bar
         parts = parse_address(bar.host.text())
         if not parts:
-            return None, self.tr("Connexion rapide : indiquez un hôte valide (ex. exemple.fr ou sftp://moi@exemple.fr).")
-        protocol = parts.get("protocol", DEFAULT_PROTOCOL)
+            return None, self.tr("Connexion rapide : indiquez un hôte valide (ex. exemple.fr ou ftp://moi@exemple.fr).")
+        # The scheme of a full address wins; otherwise the protocol chosen in the list (FTP by default).
+        protocol = parts.get("protocol") or bar.protocol_value()
         user = bar.user.text().strip() or parts.get("user", "")
         if not user:
             if protocol in ("FTP", "FTPS", "FTPSI"):

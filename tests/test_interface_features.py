@@ -138,6 +138,31 @@ def test_unreadable_bookmarks_file_is_set_aside():
 
 
 # ----- quick connect -----
+def test_quick_connect_starts_on_ftp_and_offers_every_protocol(monkeypatch):
+    window = new_window()
+    try:
+        started = []
+        monkeypatch.setattr(window, "start_connection", lambda: started.append(window.connection))
+        bar = window.quick_bar
+        assert bar.protocol_value() == "FTP"
+        assert [bar.protocol.itemData(i) for i in range(bar.protocol.count())] == ["FTP", "FTPS", "FTPSI", "SFTP", "SSH"]
+        # A bare host on FTP: anonymous login, port 21.
+        bar.host.setText("ftp.exemple.fr")
+        bar.button.click()
+        assert (started[-1].protocol, started[-1].port, started[-1].user) == ("FTP", 21, "anonymous")
+        # Implicit FTPS chosen in the list: port 990 when "auto".
+        bar.protocol.setCurrentIndex(bar.protocol.findData("FTPSI"))
+        bar.host.setText("secure.exemple.fr")
+        bar.user.setText("alice")
+        bar.button.click()
+        assert (started[-1].protocol, started[-1].port) == ("FTPSI", 990)
+        # A full address sets the list to its scheme.
+        bar.host.setText("sftp://bob@ssh.exemple.fr")
+        assert bar.protocol_value() == "SFTP"
+    finally:
+        close_window(window)
+
+
 def test_quick_connect_accepts_a_full_address_without_creating_a_profile(monkeypatch):
     from smftp.utils.storage import data_dir
     window = new_window()
@@ -154,7 +179,10 @@ def test_quick_connect_accepts_a_full_address_without_creating_a_profile(monkeyp
         assert window.sites == [] and not (data_dir() / "sites.json").exists()
         assert window.quick_history[0] == "ftp://alice@exemple.fr:2121/www"
         assert "motdepasse" not in json.dumps(window.settings.value("quick_connect/history", [], type=list))
-        # A bare host: SFTP by default, the user is required.
+        # The address chose FTP in the protocol list.
+        assert bar.protocol_value() == "FTP"
+        # A bare host with the protocol chosen in the list: SFTP needs a user.
+        bar.protocol.setCurrentIndex(bar.protocol.findData("SFTP"))
         bar.host.setText("serveur.exemple.fr")
         bar.password.clear()
         bar.button.click()
