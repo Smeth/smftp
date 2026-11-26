@@ -227,8 +227,51 @@ class Explorer(QWidget):
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty.setVisible(remote)
         layout.addWidget(self.empty)
+        self.install_keyboard()
         if not remote:
             self.commit(self.path)
+
+    def install_keyboard(self) -> None:
+        """Explorer keys: Enter opens, Backspace / Alt+Up go up, Alt+Left / Alt+Right browse history."""
+        from PySide6.QtGui import QKeySequence, QShortcut
+        for view in (self.view, self.icons):
+            for key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                shortcut = QShortcut(QKeySequence(key), view)
+                shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+                shortcut.activated.connect(self.open_current)
+            # Backspace only in the file list: in the address and search fields it erases text.
+            back = QShortcut(QKeySequence(Qt.Key.Key_Backspace), view)
+            back.setContext(Qt.ShortcutContext.WidgetShortcut)
+            back.activated.connect(self.parent_folder)
+        for keys, callback in (((Qt.KeyboardModifier.AltModifier | Qt.Key.Key_Up), self.parent_folder),
+                               ((Qt.KeyboardModifier.AltModifier | Qt.Key.Key_Left), lambda: self.travel(-1)),
+                               ((Qt.KeyboardModifier.AltModifier | Qt.Key.Key_Right), lambda: self.travel(1))):
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(callback)
+
+    def open_current(self) -> None:
+        """Enter on the list: open the current folder or file, like a double-click."""
+        if self.remote and self.position < 0:
+            return
+        if self.stack.currentWidget() is self.icons:
+            if self.remote:
+                item = self.icons.currentItem()
+                if item is not None:
+                    self.open_icon(item)
+            else:
+                index = self.icons.currentIndex()
+                if index.isValid():
+                    self.open_local(index)
+            return
+        if self.remote:
+            item = self.view.currentItem()
+            if item is not None and not item.isHidden():
+                self.open_remote(item, 0)
+        else:
+            index = self.view.currentIndex()
+            if index.isValid():
+                self.open_local(index.siblingAtColumn(0))
 
     def reveal(self, folder: str, name: str) -> None:
         """Open a folder and select one of its entries (used by search results)."""
@@ -290,11 +333,19 @@ class Explorer(QWidget):
         for label, target in breadcrumb_parts(path, self.remote):
             button = QPushButton(label)
             button.setObjectName("breadcrumb")
+            # Mouse shortcut only: Tab goes from the address to the list, not through every segment.
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.setToolTip(target)
             button.setAccessibleName(self.tr("Aller à %s") % target)
             button.clicked.connect(lambda checked=False, p=target: self.navigate(p))
             self.crumbs.addWidget(button)
         self.crumbs.addStretch()
+        self.update_navigation()
+
+    def reset_history(self) -> None:
+        """Forget the folders of a closed session: Back must not open another server's paths."""
+        self.history = []
+        self.position = -1
         self.update_navigation()
 
     def update_navigation(self) -> None:
@@ -308,12 +359,16 @@ class Explorer(QWidget):
         refresh.setEnabled(connected)
 
     def travel(self, offset: int) -> None:
+        if self.remote and self.position < 0:
+            return
         target = self.position + offset
         if 0 <= target < len(self.history):
             self.position = target
             self.navigate(self.history[target])
 
     def parent_folder(self) -> None:
+        if self.remote and self.position < 0:
+            return  # Not connected.
         self.navigate(posixpath.dirname(self.path) or "/" if self.remote else str(Path(self.path).parent))
 
     def refresh(self) -> None:

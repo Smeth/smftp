@@ -78,9 +78,9 @@ class WorkspaceFeatures:
         self.add_command(display, "Vue Fichiers", lambda: self.set_view("files"))
         self.add_command(display, "Vue Terminal", lambda: self.set_view("terminal"))
         display.addSeparator()
-        self.add_command(display, "Fichiers distants cachés", self.remote.show_hidden, checkable=True)
-        self.add_command(display, "Vue en icônes", self.set_icon_views, checkable=True)
-        self.add_command(display, "Panneaux verticaux", lambda checked: self.panel_splitter.setOrientation(
+        self.remote_hidden_action = self.add_command(display, "Fichiers distants cachés", self.remote.show_hidden, checkable=True)
+        self.icon_view_action = self.add_command(display, "Vue en icônes", self.set_icon_views, checkable=True)
+        self.vertical_action = self.add_command(display, "Panneaux verticaux", lambda checked: self.panel_splitter.setOrientation(
             Qt.Orientation.Vertical if checked else Qt.Orientation.Horizontal), checkable=True)
         self.add_command(display, "Journal", lambda: (self.set_view("files"),
                                                       self.activity_tabs.setCurrentWidget(self.log_panel)))
@@ -107,6 +107,14 @@ class WorkspaceFeatures:
             for action in actions:
                 if action.text() == self.tr(title):
                     self.menuBar().addAction(action)
+        # Alt+letter opens each menu (Alt+F: Fichier…), as in other Windows applications.
+        mnemonics = {"Fichier": "&Fichier", "Édition": "É&dition", "Affichage": "&Affichage", "Serveurs": "&Serveurs",
+                     "Transferts": "&Transferts", "Outils": "&Outils", "Aide": "A&ide"}
+        for action in self.menuBar().actions():
+            label = mnemonics.get(action.text())
+            if label:
+                action.setText(self.tr(label))
+        self.restore_layout()
         self.refresh_sites()
         QTimer.singleShot(0, self.transfers.restore)
 

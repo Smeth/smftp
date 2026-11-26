@@ -30,8 +30,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("SMFTP — Votre espace de transfert")
-        self.resize(1380, 880)
         self.setMinimumSize(940, 620)
+        self.fit_to_screen()
         self.connection = None
         self.online = False
         self.busy = False
@@ -80,6 +80,21 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.site_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.site_list.customContextMenuRequested.connect(self.site_context_menu)
         side.addWidget(self.site_list)
+        # First launch: say what to do instead of showing an empty list.
+        self.welcome = QWidget()
+        welcome = QVBoxLayout(self.welcome)
+        welcome.setContentsMargins(0, 8, 0, 8)
+        hint = QLabel(self.tr("Aucun serveur enregistré pour l’instant.\n\nAjoutez votre premier serveur avec "
+                              "« Nouvelle connexion », ou reprenez vos sites FileZilla."))
+        hint.setObjectName("muted")
+        hint.setWordWrap(True)
+        welcome.addWidget(hint)
+        self.import_button = QPushButton(self.tr("Importer depuis FileZilla…"))
+        self.import_button.setToolTip(self.tr("Fichier sitemanager.xml de FileZilla, ou export JSON de SMFTP."))
+        self.import_button.clicked.connect(lambda: self.import_sites())
+        welcome.addWidget(self.import_button)
+        welcome.addStretch()
+        side.addWidget(self.welcome)
         self.connect_button = QPushButton(self.tr("＋  Nouvelle connexion"))
         self.connect_button.setAccessibleName(self.tr("Nouvelle connexion"))
         self.connect_button.setObjectName("primary")
@@ -91,6 +106,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         side.addWidget(note)
         workspace.addWidget(sidebar)
         main = QSplitter(Qt.Orientation.Vertical)
+        self.main_splitter = main
         panels = QSplitter()
         self.panel_splitter = panels
         self.local = Explorer()
@@ -202,7 +218,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                 self.file_shortcuts.append(action)
         hidden = QAction(self.tr("Afficher les fichiers locaux cachés"), self)
         hidden.setCheckable(True)
-        hidden.triggered.connect(self.local.show_hidden)
+        hidden.toggled.connect(self.local.show_hidden)
+        self.local_hidden_action = hidden
         self.display_menu = self.menuBar().addMenu(self.tr("Affichage"))
         self.display_menu.addAction(hidden)
         sites_menu = self.menuBar().addMenu(self.tr("Serveurs"))
@@ -343,6 +360,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             label = (group + " / " if group else "") + (site.get("name") or site["host"])
             self.site_list.addItem(label)
             self.site_list.item(self.site_list.count() - 1).setData(Qt.ItemDataRole.UserRole, identity(site))
+        self.site_list.setVisible(bool(self.sites))
+        self.welcome.setVisible(not self.sites)
         self.update_site_states()
 
     def persist_profile(self, connection, original=None):
@@ -575,6 +594,65 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             menu.addAction(self.tr("Préparer le glisser-déposer externe")).triggered.connect(self.prepare_external_drag)
         menu.exec(point)
 
+    def ask_name(self, title, current=""):
+        """Name dialog; when renaming, the name is filled in and selected up to its extension."""
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.setLabelText(self.tr("Nom :"))
+        dialog.setTextValue(current)
+        if current:
+            from PySide6.QtWidgets import QLineEdit
+            stem = len(Path(current).stem) if Path(current).suffix and not current.startswith(".") else len(current)
+
+            def select_stem():
+                field = dialog.findChild(QLineEdit)
+                if field is not None:
+                    field.setSelection(0, stem)
+            QTimer.singleShot(0, select_stem)
+        accepted = dialog.exec() == QInputDialog.DialogCode.Accepted
+        return dialog.textValue().strip(), accepted
+
+    # ----- window layout, kept between launches -----
+    LAYOUT_SPLITTERS = ("workspace_splitter", "main_splitter", "panel_splitter")
+
+    def fit_to_screen(self):
+        from PySide6.QtGui import QGuiApplication
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:
+            self.resize(1380, 880)
+            return
+        available = screen.availableGeometry()
+        self.resize(max(self.minimumWidth(), min(1380, int(available.width() * 0.9))),
+                    max(self.minimumHeight(), min(880, int(available.height() * 0.9))))
+
+    def restore_layout(self):
+        settings = self.settings
+        geometry = settings.value("layout/geometry")
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+        for name in self.LAYOUT_SPLITTERS:
+            state = settings.value(f"layout/{name}")
+            if state is not None:
+                getattr(self, name).restoreState(state)
+        for panel, key in ((self.local, "local"), (self.remote, "remote")):
+            state = settings.value(f"layout/{key}_columns")
+            if state is not None:
+                panel.view.header().restoreState(state)
+        for action, key in ((self.local_hidden_action, "local_hidden"), (self.remote_hidden_action, "remote_hidden"),
+                            (self.icon_view_action, "icon_view"), (self.vertical_action, "vertical_panels")):
+            action.setChecked(settings.value(f"layout/{key}", False, type=bool))
+
+    def save_layout(self):
+        settings = self.settings
+        settings.setValue("layout/geometry", self.saveGeometry())
+        for name in self.LAYOUT_SPLITTERS:
+            settings.setValue(f"layout/{name}", getattr(self, name).saveState())
+        settings.setValue("layout/local_columns", self.local.view.header().saveState())
+        settings.setValue("layout/remote_columns", self.remote.view.header().saveState())
+        for action, key in ((self.local_hidden_action, "local_hidden"), (self.remote_hidden_action, "remote_hidden"),
+                            (self.icon_view_action, "icon_view"), (self.vertical_action, "vertical_panels")):
+            settings.setValue(f"layout/{key}", action.isChecked())
+
     def focused_file_action(self, operation):
         focused = QApplication.focusWidget()
         for panel in (self.local, self.remote):
@@ -614,8 +692,15 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         if operation in ("mkdir", "rename"):
             if operation == "rename" and len(selected) != 1:
                 return
-            value, ok = QInputDialog.getText(self, self.tr("Nouveau dossier" if operation == "mkdir" else "Renommer"), self.tr("Nom :"))
-            if not ok or not value or value in (".", "..") or any(char in value for char in "/\\:\r\n"):
+            current = ""
+            if operation == "rename":
+                current = posixpath.basename(selected[0][0].rstrip("/")) if panel.remote else Path(selected[0][0]).name
+            value, ok = self.ask_name(self.tr("Nouveau dossier" if operation == "mkdir" else "Renommer"), current)
+            if not ok or not value or value == current:
+                return
+            if value in (".", "..") or any(char in value for char in "/\\:\r\n"):
+                self.on_error(self.tr("Nom refusé : « %1 ». Un nom ne peut pas être « . » ou « .. », ni contenir / \\ : "
+                                      "ou un retour à la ligne.").replace("%1", value))
                 return
             join = posixpath.join if panel.remote else lambda a, b: str(Path(a) / b)
             arguments = [join(panel.path, value)] if operation == "mkdir" else [selected[0][0], join(panel.path, value)]
@@ -1137,6 +1222,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.remote.external_cache.clear()
         self.remote.external_metadata.clear()
         self.remote.empty.show()
+        self.remote.reset_history()
         self.remote.count.setText(self.tr("Non connecté"))
         running = self.transfers.pending_count()
         if running:
@@ -1222,7 +1308,9 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             unsent = any(record.get("unsent") for record in self.edit_records.values())
             import sys
             terminals = len(self.terminal.sessions())
-            if "--smoke-test" not in sys.argv and (self.isVisible() or self.online or self.transfers.active() or dirty or unsent or terminals):
+            scheduled = self.scheduler.enabled_count()
+            if "--smoke-test" not in sys.argv and (self.online or self.transfers.active() or dirty or unsent
+                                                   or terminals or scheduled):
                 message = self.tr("Voulez-vous quitter SMFTP ?")
                 if self.online or self.busy:
                     message += self.tr("\nLa connexion au serveur sera fermée.")
@@ -1238,6 +1326,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
                     event.ignore()
                     return
+        if not self.closing:
+            self.save_layout()
         local_active = any(w.isRunning() for w in getattr(self, "local_workers", []))
         sync_active = self.sync_running() or any(w.isRunning() for w in self.search_workers)
         self.terminal.close_all()

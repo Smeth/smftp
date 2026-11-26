@@ -35,7 +35,7 @@ def test_saved_profile_connects_without_dialog(monkeypatch):
                                     name="Production", group="Web", remote_directory="/www"))
         assert started[0].password == "stored-secret"
         assert started[0].remote_directory == "/www"
-        titles = [a.text() for a in window.menuBar().actions()]
+        titles = [a.text().replace("&", "") for a in window.menuBar().actions()]
         assert titles == ["Fichier", "Édition", "Affichage", "Serveurs", "Transferts", "Outils", "Aide"]
     finally:
         finish_window(window)
@@ -71,11 +71,22 @@ def test_close_can_be_cancelled(monkeypatch):
         questions.append(args)
         return QMessageBox.StandardButton.No
     monkeypatch.setattr(QMessageBox, "question", reject)
+    window.online = True  # A connection would be closed: SMFTP asks first.
     assert not window.close()
     assert window.isVisible()
     assert window.thread.isRunning()
     assert questions[0][-1] == QMessageBox.StandardButton.No
+    window.online = False
     monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+    finish_window(window)
+
+
+def test_closing_an_idle_window_asks_nothing(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.show()
+    app.processEvents()
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: pytest.fail("Nothing is running: no question"))
     finish_window(window)
 
 
