@@ -26,7 +26,7 @@ from PySide6.QtCore import QThread, Signal
 from smftp.i18n import tr
 
 
-CURRENT_VERSION = "1.2.0"
+CURRENT_VERSION = "1.2.1"
 RELEASES_API = "https://api.github.com/repos/Smeth/smftp/releases/latest"
 RELEASES_PAGE = "https://github.com/Smeth/smftp/releases/latest"
 DISTRIBUTIONS = ("github", "store", "uptodown")

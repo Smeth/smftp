@@ -1,6 +1,6 @@
 # SMFTP 1.2
 
-Version actuelle : **1.2.0**. Les défauts relevés par l’audit du 9 novembre 2026 sont corrigés et couverts par des tests (voir [docs/AUDIT_2026-11-09.md](docs/AUDIT_2026-11-09.md) pour le constat d’origine). Données personnelles : voir la [politique de confidentialité](docs/CONFIDENTIALITE.md).
+Version actuelle : **1.2.1**. Les défauts relevés par l’audit du 9 novembre 2026 sont corrigés et couverts par des tests (voir [docs/AUDIT_2026-11-09.md](docs/AUDIT_2026-11-09.md) pour le constat d’origine). Données personnelles : voir la [politique de confidentialité](docs/CONFIDENTIALITE.md).
 
 Client de bureau natif Python / PySide6, en français. Le design reprend la lisibilité de Cyberduck, l’explorateur à deux panneaux de Transmit et la barre latérale, les onglets et les accents bleus de VS Code. Il ne réutilise pas leurs marques ni leurs ressources graphiques.
 
