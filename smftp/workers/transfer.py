@@ -64,6 +64,24 @@ class Cancelled(Exception):
     pass
 
 
+def dropped_connection(error: Exception) -> bool:
+    """A network error of a connection the server closed (not a local file problem)."""
+    import errno
+    import ftplib
+    if isinstance(error, (FileNotFoundError, PermissionError, IsADirectoryError, NotADirectoryError,
+                          FileExistsError)):
+        return False
+    if isinstance(error, OSError) and error.errno in (errno.ENOSPC, 112):
+        return False
+    if isinstance(error, (OSError, EOFError, ftplib.error_temp, ftplib.error_reply, ftplib.error_proto)):
+        return True
+    try:
+        import paramiko
+    except ImportError:
+        return False
+    return isinstance(error, paramiko.SSHException)
+
+
 class TransferWorker(QThread):
     activity = Signal(str)
     failed = Signal(object)
@@ -90,6 +108,11 @@ class TransferWorker(QThread):
         self.listings = {}
         self.remote_entries = {}
         self.verify = True  # Compare a content fingerprint after each file.
+        self.mark_downloads = True  # Windows "Mark of the Web" on downloaded files (preference).
+        self.paused = False  # A pause happened on the current connection.
+        self.reconnected = False  # The one reconnection after a long pause was used.
+        self.answers = {}  # Conflict answers, kept when the copy restarts after a reconnection.
+        self.started_uploads = set()  # Direct (non-safe) uploads begun by this worker.
         self.conflict_details = {}  # Sizes and dates shown with the conflict question.
         self.known_remote = {}  # Folder uploads: remote path -> Entry or None, read once per folder.
         self.made_dirs = set()
@@ -112,6 +135,9 @@ class TransferWorker(QThread):
         self.activity.emit(redact(prefix + message, (self.task.connection.password,)))
 
     def checkpoint(self):
+        if not self.running.is_set():
+            # The server may drop the idle connection during a long pause.
+            self.paused = True
         while not self.running.wait(0.1):
             if self.cancelled.is_set():
                 raise Cancelled
@@ -150,11 +176,14 @@ class TransferWorker(QThread):
     def conflict(self, name):
         if self.task.conflict != "ask":
             return self.task.conflict
+        if name in self.answers:
+            return self.answers[name]  # Already answered before a reconnection.
         self.answer.clear()
         self.conflict_found.emit(name)
         while not self.answer.wait(0.1):
             self.checkpoint()
         self.checkpoint()
+        self.answers[name] = self.choice
         return self.choice
 
     def measure(self, client, local: Path, remote: str) -> int:
@@ -272,7 +301,9 @@ class TransferWorker(QThread):
                 source_meta, target_meta = (source.size, source.modified), (existing.st_size, existing.st_mtime)
             self.conflict_details = dict(name=local.name, upload=self.task.upload, source=source_meta,
                                          target=target_meta, destination=remote if self.task.upload else str(local))
-            if self.task.planned and self.task.expected is not None and self.matches_plan(existing):
+            if self.task.upload and remote in self.started_uploads:
+                choice = "resume"  # Our own partial upload, cut during a pause.
+            elif self.task.planned and self.task.expected is not None and self.matches_plan(existing):
                 choice = "overwrite"
             elif self.task.planned:
                 # Created or changed since the comparison: never overwrite silently.
@@ -342,6 +373,7 @@ class TransferWorker(QThread):
                         pass
                     raise
             else:
+                self.started_uploads.add(remote)
                 client.upload(str(local), remote, self.progress, offset)
                 if not self.verify_content(client, local, remote):
                     raise RuntimeError(self.tr("L’empreinte du fichier distant ne correspond pas à la source : renvoyez-le."))
@@ -425,7 +457,11 @@ class TransferWorker(QThread):
         self.initial_offset = offset
         client.download(remote, str(temporary), self.progress, offset)
         self.checkpoint()
-        if temporary.stat().st_size != source.size:
+        received = temporary.stat().st_size
+        if received < source.size and self.paused and not self.reconnected:
+            # The server closed the data connection during a pause: keep the partial file.
+            raise ConnectionAbortedError(self.tr("Téléchargement interrompu par le serveur pendant la pause."))
+        if received != source.size:
             temporary.unlink(missing_ok=True)
             raise RuntimeError(self.tr("La taille téléchargée ne correspond pas au fichier distant, qui a peut-être changé. Le fichier local d’origine est conservé."))
         if not self.verify_content(client, temporary, remote, local.name):
@@ -433,18 +469,48 @@ class TransferWorker(QThread):
             raise RuntimeError(self.tr("L’empreinte du fichier téléchargé ne correspond pas au fichier distant. "
                                        "Le fichier local d’origine est conservé ; relancez le téléchargement."))
         os.replace(temporary, local)
+        if self.mark_downloads:
+            from smftp.utils.paths import mark_from_internet
+            # SmartScreen and Office Protected View then treat it as a download.
+            mark_from_internet(local)
 
     client = None
 
+    def open_client(self):
+        client = make_client(self.task.connection.protocol, str(data_dir() / "known_hosts"), self.report_activity)
+        self.client = client
+        client.connect(self.task.connection)
+        self.paused = False
+        return client
+
     def run(self):
         client = None
+        self.reconnected, self.answers, self.started_uploads = False, {}, set()
         try:
             self.checkpoint()
-            protocol = self.task.connection.protocol
-            client = make_client(protocol, str(data_dir() / "known_hosts"), self.report_activity)
-            self.client = client
-            client.connect(self.task.connection)
-            self.copy(client, Path(self.task.local), self.task.remote, self.task.directory)
+            client = self.open_client()
+            while True:
+                try:
+                    self.copy(client, Path(self.task.local), self.task.remote, self.task.directory)
+                    break
+                except Cancelled:
+                    raise
+                except Exception as error:
+                    if self.cancelled.is_set() or self.reconnected or not self.paused or not dropped_connection(error):
+                        raise
+                # Long pause: the server has closed the connection. Reconnect once and
+                # continue from the partial file already written.
+                self.reconnected = True
+                self.report_activity(self.tr("Statut : connexion fermée par le serveur pendant la pause ; "
+                                             "reconnexion et reprise du fichier partiel…"))
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                self.checkpoint()
+                client = self.open_client()
+                self.task.resume = True
+                self.done_bytes = 0  # Files finished before are counted again when skipped.
             self.report_activity(self.tr("Statut : transfert terminé."))
             self.result.emit("Terminé")
         except Cancelled:

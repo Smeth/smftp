@@ -14,7 +14,7 @@ from smftp.utils.storage import data_dir, load_sites, save_sites
 from smftp.ui.transfers import Transfers
 from smftp.workers.transfer import Transfer
 from smftp.core.errors import ErrorInfo, describe_error, redact
-from smftp.utils.profiles import profile_for, merge_profiles, normalize_profile, store_credential, identity, read_profiles, XMLCorrectionRequired
+from smftp.utils.profiles import profile_for, merge_profiles, normalize_profile, store_credential, store_proxy_credential, identity, read_profiles, XMLCorrectionRequired
 from smftp.ui.workspace_features import WorkspaceFeatures
 from smftp.models.entries import protocol_label, is_terminal, uses_ssh
 from smftp.ui.icons import resize_within_screen
@@ -153,6 +153,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.transfers = Transfers(self)
         self.transfers.concurrency.setValue(self.settings.value("concurrency", 2, type=int))
         self.transfers.verify = self.settings.value("verify_checksum", True, type=bool)
+        self.transfers.mark_downloads = self.settings.value("mark_downloads", True, type=bool)
         self.transfers.completed.connect(self.transfer_completed)
         self.transfers.changed.connect(self.refresh)
         self.transfers.outcome.connect(self.transfer_outcome)
@@ -394,11 +395,13 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             return False
         try:
             store_credential(connection)
+            store_proxy_credential(connection)
             if original and identity(original) != connection.identity:
                 from smftp.models.entries import Connection
                 previous = Connection(**normalize_profile(original))
                 previous.remember = False
                 store_credential(previous)
+                store_proxy_credential(previous)  # No password given: its vault entry is removed.
         except Exception:
             if connection.remember:
                 # The profile must not claim a remembered secret that the vault never received.
@@ -443,7 +446,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             connection = Connection(**normalize_profile(site))
             connection.remember = False
             store_credential(connection)
-            remaining = [s for s in self.sites if identity(s) != connection.identity]
+            store_proxy_credential(connection)
+            remaining =[s for s in self.sites if identity(s) != connection.identity]
             save_sites(remaining)
             self.sites = remaining
             self.refresh_sites()
@@ -968,6 +972,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                 self.local.navigate(folder)
             self.transfers.concurrency.setValue(dialog.count.value())
             self.transfers.verify = dialog.verify.isChecked()
+            self.transfers.mark_downloads = dialog.mark_downloads.isChecked()
 
     def sync_running(self):
         scheduled = getattr(self, "scheduler", None)

@@ -122,6 +122,26 @@ class BaseClient(ABC):
 # Encoding found by "auto" for a server (connection identity -> codec), so that the
 # transfer connections opened later use the same one as the browsing session.
 detected_encodings = {}
+# Server clock offset found with MDTM (connection identity -> minutes), same purpose.
+detected_offsets = {}
+
+
+def proxy_module_error():
+    from smftp.core.protocol_log import ProxyActiveModeError
+    return ProxyActiveModeError(tr("Le mode actif est impossible à travers un proxy : "
+                                   "choisissez le mode passif dans le profil."))
+
+
+def round_offset(seconds: float) -> int | None:
+    """Minutes of a clock offset, to the quarter hour; None when it is not one.
+
+    LIST shows minutes and MDTM seconds: a real offset lands within two minutes
+    of a quarter hour. A file listed with its year only (00:00) does not.
+    """
+    quarters = round(seconds / 900)
+    if abs(seconds - quarters * 900) > 120 or abs(quarters) > 14 * 4:
+        return None
+    return quarters * 15
 
 
 class FTPClient(BaseClient):
@@ -133,6 +153,8 @@ class FTPClient(BaseClient):
     list_all = None  # LIST -a: None = not tried yet, then True or False.
     hides_dotfiles = False  # True once a plain LIST was used (dotfiles may be missing).
     incomplete_listing = False  # True once LIST lines could not be understood.
+    time_offset = None  # LIST times: server clock minus UTC in minutes; None = unknown.
+    offset_checked = False  # Automatic detection already done (or a manual offset).
 
     def exists(self, path: str) -> Entry | None:
         found = super().exists(path)
@@ -157,7 +179,7 @@ class FTPClient(BaseClient):
         return Entry(posixpath.basename(path), False, int(size), modified)
 
     def connect(self, connection: Connection) -> str:
-        self.secrets = (connection.password,)
+        self.secrets = (connection.password, connection.proxy_password)
         self.timeout = connection.timeout
         if self.implicit:
             self.ftp = LoggedImplicitFTPS(context=ssl.create_default_context())
@@ -166,6 +188,17 @@ class FTPClient(BaseClient):
                         if self.tls else LoggedFTP())
         self.ftp.trace = self.report
         self.identity = connection.identity
+        self.time_offset = connection.time_offset
+        self.offset_checked = connection.time_offset is not None
+        if self.time_offset is None and self.identity in detected_offsets:
+            self.time_offset = detected_offsets[self.identity]
+            self.offset_checked = True
+        from smftp.core import proxy
+        if proxy.uses_proxy(connection):
+            if not connection.passive:
+                raise proxy_module_error()
+            self.report(tr("Statut : connexion par le proxy {proxy}…").format(proxy=proxy.describe(connection)))
+            self.ftp.open_socket = lambda host, port, timeout: proxy.open_socket(connection, host, port, timeout)
         self.auto_encoding = connection.encoding == "auto"
         # Set before connecting: ftplib builds the control-channel reader in connect().
         self.ftp.encoding = (detected_encodings.get(self.identity, "utf-8") if self.auto_encoding
@@ -265,7 +298,9 @@ class FTPClient(BaseClient):
                 # This listing may leave out names starting with ".": mirror
                 # synchronization must not take them for missing files.
                 self.hides_dotfiles = True
-            entries, skipped = parse_listing(lines)
+            if self.time_offset is None and not self.offset_checked:
+                self.detect_offset(path, parse_listing(lines, offset=0)[0])
+            entries, skipped = parse_listing(lines, offset=self.time_offset)
             if skipped:
                 # Mirror synchronization must not take the missing names for deleted files.
                 self.incomplete_listing = True
@@ -304,6 +339,32 @@ class FTPClient(BaseClient):
                 continue
             entries.append(Entry(name, kind == "dir", size, modified, permissions))
         return entries
+
+    def detect_offset(self, path: str, entries: list[Entry]) -> None:
+        """LIST shows the server's local time, MDTM gives UTC: their difference on one
+        file is the server's offset, kept for the session (and its transfers)."""
+        files = [e for e in entries if not e.is_dir and not e.permissions.startswith("l") and e.modified]
+        if not files:
+            return  # Try again with the next listing.
+        self.offset_checked = True
+        candidate = max(files, key=lambda e: e.modified)  # Recent: listed with hours and minutes.
+        try:
+            reply = self.ftp.sendcmd(f"MDTM {posixpath.join(path, candidate.name) if path else candidate.name}")
+            stamp = reply[4:].strip().split(".")[0]
+            utc = datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp()
+        except Exception:  # Best effort: never makes the listing fail.
+            self.report(tr("Statut : MDTM indisponible ; les dates de la liste sont affichées sans correction de fuseau horaire."))
+            return
+        # The listing was read as if it were UTC: the difference is the server's offset.
+        minutes = round_offset(candidate.modified - utc)
+        if minutes is None:
+            self.report(tr("Statut : décalage horaire du serveur non déterminé ; dates de la liste non corrigées."))
+            return
+        self.time_offset = minutes
+        detected_offsets[self.identity] = minutes
+        from smftp.models.entries import format_offset
+        self.report(tr("Statut : heure du serveur détectée : {offset} (MDTM) ; dates de la liste corrigées.").format(
+            offset=format_offset(minutes)))
 
     def close(self) -> None:
         if hasattr(self, "ftp"):
@@ -467,7 +528,7 @@ class SFTPClient(BaseClient):
     def open_ssh(self, connection: Connection) -> None:
         """Connect and authenticate; an unknown server key raises UnknownHostError."""
         import paramiko
-        self.secrets = (connection.password,)
+        self.secrets = (connection.password, connection.proxy_password)
 
         class ConfirmHost(paramiko.MissingHostKeyPolicy):
             def missing_host_key(self, client, hostname, key):
@@ -496,15 +557,34 @@ class SFTPClient(BaseClient):
                 reporter(tr("Statut : clé du serveur acceptée ; authentification SSH par clé privée…"))
                 return super().auth_publickey(*args, **kwargs)
 
-        self.ssh.connect(connection.host, port=connection.port, username=connection.user,
-                         # With a key file the secret is its passphrase: it must never be offered
-                         # to the server as a password if the key is refused.
-                         password=None if connection.key_file else (connection.password or None),
-                         key_filename=connection.key_file or None,
-                         passphrase=(connection.password or None) if connection.key_file else None,
-                         timeout=connection.timeout, auth_timeout=connection.timeout,
-                         banner_timeout=connection.timeout, channel_timeout=connection.timeout,
-                         look_for_keys=False, allow_agent=False, transport_factory=ReportingTransport)
+        from smftp.core import ppk, proxy
+        key_file, pkey = connection.key_file or None, None
+        if key_file and ppk.is_ppk(key_file):
+            # PuTTY format: read here, paramiko only knows OpenSSH / PEM files.
+            pkey = ppk.load_ppk(key_file, connection.password or None)
+            self.report(tr("Statut : clé PuTTY (.ppk) lue."))
+            key_file = None
+        sock = None
+        if proxy.uses_proxy(connection):
+            self.report(tr("Statut : connexion par le proxy {proxy}…").format(proxy=proxy.describe(connection)))
+            sock = proxy.open_socket(connection, connection.host, connection.port, connection.timeout)
+        if connection.use_agent:
+            self.report(tr("Statut : l’agent SSH (Pageant ou OpenSSH) sera aussi utilisé pour l’authentification."))
+        try:
+            self.ssh.connect(connection.host, port=connection.port, username=connection.user,
+                             # With a key file the secret is its passphrase: it must never be offered
+                             # to the server as a password if the key is refused.
+                             password=None if connection.key_file else (connection.password or None),
+                             key_filename=key_file, pkey=pkey,
+                             passphrase=(connection.password or None) if key_file else None,
+                             timeout=connection.timeout, auth_timeout=connection.timeout,
+                             banner_timeout=connection.timeout, channel_timeout=connection.timeout,
+                             look_for_keys=False, allow_agent=bool(connection.use_agent),
+                             transport_factory=ReportingTransport, sock=sock)
+        except BaseException:
+            if sock is not None:
+                sock.close()
+            raise
         self.ssh.get_transport().set_keepalive(30)
         self.timeout = connection.timeout
 

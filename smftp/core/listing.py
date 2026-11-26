@@ -1,4 +1,5 @@
 """Conservative parsers for legacy Unix and Windows FTP LIST listings."""
+import calendar
 from datetime import datetime
 import re
 from smftp.i18n import tr
@@ -44,7 +45,15 @@ def unix_date(tokens, index, now):
     return None
 
 
-def parse_unix(line: str) -> Entry | None:
+def to_timestamp(stamp: datetime, offset: int | None) -> float:
+    """Server-local naive time -> timestamp. ``offset`` is the server clock minus UTC
+    in minutes; None (unknown) reads the time as this computer's local time."""
+    if offset is None:
+        return stamp.timestamp()
+    return calendar.timegm(stamp.timetuple()) - offset * 60
+
+
+def parse_unix(line: str, offset: int | None = None) -> Entry | None:
     tokens = [(m.group(), m.end()) for m in re.finditer(r"\S+", line)]
     if not tokens or not UNIX_MODE.fullmatch(tokens[0][0]):
         return None
@@ -68,15 +77,15 @@ def parse_unix(line: str) -> Entry | None:
         if kind == "l":
             name = name.split(" -> ", 1)[0]
         size = int(size_text) if size_text.isdigit() and kind == "-" else 0
-        return Entry(name, kind == "d", size, stamp.timestamp(), permissions)
+        return Entry(name, kind == "d", size, to_timestamp(stamp, offset), permissions)
     return None
 
 
-def parse_list_line(line: str) -> Entry | None:
+def parse_list_line(line: str, offset: int | None = None) -> Entry | None:
     """One LIST line; None for lines without a file ("total 12"), ValueError when not understood."""
     if not line.strip() or line.startswith("total "):
         return None
-    entry = parse_unix(line)
+    entry = parse_unix(line, offset)
     if entry is not None:
         return entry
     match = WINDOWS.match(line)
@@ -88,11 +97,11 @@ def parse_list_line(line: str) -> Entry | None:
         if ampm:
             hour = hour % 12 + (12 if ampm.upper() == "PM" else 0)
         date = datetime(year, int(month), int(day), hour, int(minute))
-        return Entry(name, size.upper() == "<DIR>", 0 if size.upper() == "<DIR>" else int(size), date.timestamp())
+        return Entry(name, size.upper() == "<DIR>", 0 if size.upper() == "<DIR>" else int(size), to_timestamp(date, offset))
     raise ValueError(tr("Format LIST non reconnu ; la liste ne peut pas être interprétée avec fiabilité."))
 
 
-def parse_listing(lines) -> tuple[list[Entry], int]:
+def parse_listing(lines, offset: int | None = None) -> tuple[list[Entry], int]:
     """Entries of a LIST answer and the number of lines that were not understood.
 
     One unusual line no longer makes the whole folder unreadable. A listing where
@@ -101,7 +110,7 @@ def parse_listing(lines) -> tuple[list[Entry], int]:
     entries, skipped = [], 0
     for line in lines:
         try:
-            entry = parse_list_line(line)
+            entry = parse_list_line(line, offset)
         except (ValueError, KeyError, IndexError):
             skipped += 1
             continue

@@ -45,7 +45,7 @@ def describe_error(error: Exception, connection: Connection | None = None,
     causes = list(nested.values()) if isinstance(nested, dict) else []
     numbers = {getattr(e, "errno", None) for e in [error, *causes]}
     numbers.update(getattr(e, "winerror", None) for e in [error, *causes])
-    if name in ("XMLImportError", "XMLCorrectionRequired"):
+    if name in ("XMLImportError", "XMLCorrectionRequired", "ProxyError", "ProxyActiveModeError", "PPKError"):
         summary = text
     elif isinstance(error, socket.gaierror):
         summary = tr("Hôte introuvable. Vérifiez l’adresse du serveur et votre DNS.")
@@ -107,7 +107,7 @@ def describe_error(error: Exception, connection: Connection | None = None,
     for address, cause in nested.items() if isinstance(nested, dict) else []:
         details += "\n" + tr("{address} : {kind} : {cause}").format(
             address=address, kind=type(cause).__name__, cause=cause)
-    secrets = (connection.password,) if connection else ()
+    secrets = (connection.password, getattr(connection, "proxy_password", "")) if connection else ()
     retryable = isinstance(error, (ConnectionError, TimeoutError, EOFError, socket.gaierror)) or bool(
         numbers & {errno.ETIMEDOUT, errno.ECONNREFUSED, errno.ENETUNREACH, errno.EHOSTUNREACH, 10060, 10061, 10054, 10053, 10051, 10065})
     if isinstance(error, ftplib.error_temp) and text[:3] in ("421", "425", "426"):
