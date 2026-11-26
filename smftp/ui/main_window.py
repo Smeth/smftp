@@ -688,9 +688,9 @@ class MainWindow(RemoteTabsFeatures, WorkspaceFeatures, NavigationFeatures, QMai
     def restore_layout(self):
         settings = self.settings
         if settings.value("layout/main_splitter") is None:
-            # First launch: about 40 % of the height for the log and the transfer queue.
+            # First launch: about a third of the height for the log and the transfer queue.
             QTimer.singleShot(0, lambda: self.main_splitter.setSizes(
-                [int(self.main_splitter.height() * 0.6), int(self.main_splitter.height() * 0.4)]))
+                [int(self.main_splitter.height() * 0.66), int(self.main_splitter.height() * 0.34)]))
         geometry = settings.value("layout/geometry")
         if geometry is not None:
             self.restoreGeometry(geometry)
