@@ -32,7 +32,7 @@ def test_offline_profile_save_update_and_detailed_error(monkeypatch):
     app = QApplication.instance() or QApplication([])
     import smftp.ui.main_window as module
     written, vault_calls, boxes = [], [], []
-    monkeypatch.setattr(module, "load_sites", lambda: [])
+    monkeypatch.setattr(module, "load_sites", lambda *args: [])
     monkeypatch.setattr(module, "save_sites", lambda profiles: written.append(profiles))
     monkeypatch.setattr(module, "store_credential", lambda connection: vault_calls.append(connection))
     monkeypatch.setattr(QMessageBox, "exec", lambda box: boxes.append((box.text(), box.detailedText())))
@@ -91,7 +91,7 @@ def test_xml_header_repair_confirmation(tmp_path, monkeypatch, approve):
     original = b'<?xml version="1.0" standalone="true"?><FileZilla3><Servers><Server><Host>test.local</Host><User>alice</User></Server></Servers></FileZilla3>'
     path.write_bytes(original)
     written, questions, errors = [], [], []
-    monkeypatch.setattr(module, "load_sites", lambda: [])
+    monkeypatch.setattr(module, "load_sites", lambda *args: [])
     monkeypatch.setattr(module, "save_sites", lambda sites: written.append(sites))
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *args: (str(path), ""))
     def answer(*args):

@@ -47,7 +47,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.temp_dirs = []
         self.watcher = QFileSystemWatcher(self)
         self.watcher.fileChanged.connect(self.external_changed)
-        self.sites = load_sites()
+        self.site_problems = []
+        self.sites = load_sites(self.site_problems)
         root = QWidget()
         self.setCentralWidget(root)
         outer = QVBoxLayout(root)
@@ -189,8 +190,10 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                                      ("Actualiser", "F5", self.refresh),
                                      ("Rechercher", "Ctrl+F", self.focus_search),
                                      ("Nouveau dossier", "Ctrl+N", lambda: self.file_action("mkdir")),
-                                     ("Renommer", "F2", lambda: self.file_action("rename")),
-                                     ("Supprimer", "Delete", lambda: self.file_action("remove"))]:
+                                     # Suppr and F2 act only on the file panel that has the
+                                     # keyboard focus, never on a selection left elsewhere.
+                                     ("Renommer", "F2", lambda: self.focused_file_action("rename")),
+                                     ("Supprimer", "Delete", lambda: self.focused_file_action("remove"))]:
             action = QAction(self.tr(text), self)
             action.setShortcut(QKeySequence(key))
             action.triggered.connect(callback)
@@ -572,6 +575,14 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             menu.addAction(self.tr("Préparer le glisser-déposer externe")).triggered.connect(self.prepare_external_drag)
         menu.exec(point)
 
+    def focused_file_action(self, operation):
+        focused = QApplication.focusWidget()
+        for panel in (self.local, self.remote):
+            if focused is not None and (panel is focused or panel.isAncestorOf(focused)):
+                self.last_panel = panel
+                self.file_action(operation, panel)
+                return
+
     def file_action(self, operation, panel=None):
         import posixpath
         panel = panel or self.active_panel()
@@ -609,7 +620,21 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             join = posixpath.join if panel.remote else lambda a, b: str(Path(a) / b)
             arguments = [join(panel.path, value)] if operation == "mkdir" else [selected[0][0], join(panel.path, value)]
         elif operation == "remove":
-            if not selected or QMessageBox.question(self, self.tr("Suppression définitive"), self.tr("Supprimer définitivement %n élément(s), ainsi que leur contenu ?", "", len(selected)), QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            if not selected:
+                return
+            names = [(posixpath.basename(path.rstrip("/")) if panel.remote else Path(path).name) + ("/" if directory else "")
+                     for path, directory in selected]
+            listed = "\n".join(f"• {name}" for name in names[:10])
+            if len(names) > 10:
+                listed += "\n" + self.tr("… et %1 autre(s)").replace("%1", str(len(names) - 10))
+            where = (self.tr("sur le serveur %1").replace("%1", self.connection.host) if panel.remote and self.connection
+                     else self.tr("sur ce PC"))
+            question = (self.tr("Supprimer définitivement ces %1 élément(s) %2, avec tout leur contenu ?")
+                        .replace("%1", str(len(names))).replace("%2", where)
+                        + "\n\n" + listed + "\n\n" + self.tr("Cette action est irréversible."))
+            if QMessageBox.question(self, self.tr("Suppression définitive"), question,
+                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                    QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
                 return
             for path, directory in selected:
                 if panel.remote:
@@ -921,19 +946,32 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         selected = self.remote.selected()
         if not self.online or len(selected) != 1 or selected[0][1]:
             return
+        remote = selected[0][0]
+        plain_text = False
+        from smftp.utils.paths import runs_when_opened
+        if external and runs_when_opened(posixpath.basename(remote)):
+            # Opening a .bat, .exe, .lnk, .vbs... with its Windows association runs it.
+            answer = QMessageBox.question(
+                self, self.tr("Fichier exécutable"),
+                self.tr("« %1 » est un type de fichier que Windows exécute à l’ouverture au lieu de l’afficher.\n\n"
+                        "Par sécurité, SMFTP ne le lance pas. Voulez-vous l’ouvrir comme texte dans le Bloc-notes ?")
+                .replace("%1", posixpath.basename(remote)),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            plain_text = True
         item = self.remote.view.selectedItems()[0]
         size = item.data(1, Qt.ItemDataRole.UserRole)
         if size > 20 * 1024 * 1024:
             self.on_error(self.tr("L’aperçu est limité à 20 Mo. Téléchargez ce fichier pour l’ouvrir."))
             return
-        remote = selected[0][0]
         try:
             directory = tempfile.TemporaryDirectory(prefix="smftp-", dir=self.settings.value("temp_directory", "") or None)
             self.temp_dirs.append(directory)
             from smftp.utils.paths import local_child
             local = str(local_child(directory.name, posixpath.basename(remote)))
             task = Transfer(self.connection, local, remote, False, conflict="overwrite")
-            record = dict(local=local, remote=remote, connection=self.connection, external=external,
+            record = dict(local=local, remote=remote, connection=self.connection, external=external, plain_text=plain_text,
                           baseline=(size, item.data(3, Qt.ItemDataRole.UserRole)))
             self.edit_downloads[id(task)] = record
             self.transfers.add(task, transient=True)
@@ -945,10 +983,25 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         local = record["local"]
         self.edit_records[local] = record
         if record["external"]:
+            from smftp.utils.paths import runs_when_opened, mark_from_internet
+            import os
+            # SmartScreen and Office Protected View then treat the copy as downloaded.
+            mark_from_internet(local)
             self.watcher.addPath(local)
-            if not QDesktopServices.openUrl(QUrl.fromLocalFile(local)):
+            if record.get("plain_text") or runs_when_opened(local):
+                if os.name == "nt":
+                    from PySide6.QtCore import QProcess
+                    windows = os.environ.get("SystemRoot", r"C:\Windows")
+                    started = QProcess.startDetached(str(Path(windows) / "System32" / "notepad.exe"), [local])
+                    if not (started[0] if isinstance(started, tuple) else started):
+                        self.on_error(self.tr("Impossible d’ouvrir le Bloc-notes."))
+                    return
+                record["external"] = False  # Other systems: SMFTP's own text editor.
+            elif not QDesktopServices.openUrl(QUrl.fromLocalFile(local)):
                 self.on_error(self.tr("Aucune application ne peut ouvrir ce fichier."))
-            return
+                return
+            else:
+                return
         try:
             if Path(local).suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"):
                 dialog = ImagePreview(local, self)

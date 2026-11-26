@@ -85,7 +85,7 @@ def test_resume_must_not_report_success_with_wrong_download_content(ftp_server, 
     local = tmp_path / "partial.bin"
     local.write_bytes(b"old-data")
     worker = TransferWorker(Transfer(Connection("127.0.0.1", "test", "FTP", port, "secret"),
-                                    str(local), "/remote.bin", False, resume=True))
+                                    str(local), "/remote.bin", False, resume=True, conflict="overwrite"))
     worker.run()
     assert local.read_bytes() == b"new-data"
 
@@ -169,7 +169,8 @@ def test_resume_continues_matching_partial_download(ftp_server, tmp_path):
     (root / "remote.bin").write_bytes(b"0123456789")
     local = tmp_path / "remote.bin"
     connection = Connection("127.0.0.1", "test", "FTP", port, "secret")
-    worker = TransferWorker(Transfer(connection, str(local), "/remote.bin", False, resume=True))
+    # The server root is tmp_path: the destination exists, and its replacement was approved.
+    worker = TransferWorker(Transfer(connection, str(local), "/remote.bin", False, resume=True, conflict="overwrite"))
     # Simulate an interrupted download: the partial matches the remote identity.
     from smftp.core.clients import FTPClient
     client = FTPClient()

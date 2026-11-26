@@ -46,6 +46,7 @@ def test_dialog_mode_selector_follows_protocol():
 
 
 def fill(form, port, password):
+    form.set_protocol("FTP")  # The loopback test server speaks FTP; the form defaults to SFTP.
     form.host.setText("127.0.0.1")
     form.port.setValue(port)
     form.user.setText("test")

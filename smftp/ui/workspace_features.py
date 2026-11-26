@@ -94,7 +94,9 @@ class WorkspaceFeatures:
         help_menu = self.menuBar().addMenu(self.tr("Aide"))
         self.add_command(help_menu, "Documentation et raccourcis", self.show_help, "F1")
         self.add_command(help_menu, "Diagnostic", self.show_diagnostic)
-        self.add_command(help_menu, "Rechercher les mises à jour…", self.check_for_updates)
+        from smftp.workers.updates import checks_for_updates
+        if checks_for_updates():  # Store builds are updated by the Microsoft Store.
+            self.add_command(help_menu, "Rechercher les mises à jour…", self.check_for_updates)
         self.add_command(help_menu, "À propos", self.show_about)
         self.remote.file_opened.connect(lambda: self.edit_remote(False))
         order = ["Fichier", "Édition", "Affichage", "Serveurs", "Transferts", "Outils", "Aide"]
@@ -677,7 +679,9 @@ class WorkspaceFeatures:
         dialog.exec()
 
     def check_for_updates(self):
-        from smftp.workers.updates import UpdateWorker
+        from smftp.workers.updates import UpdateWorker, checks_for_updates
+        if not checks_for_updates():
+            return
 
         if getattr(self, "update_worker", None) and self.update_worker.isRunning():
             return

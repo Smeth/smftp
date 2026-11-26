@@ -300,8 +300,11 @@ class Transfers(QWidget):
         box.exec()
         worker = record["worker"]
         worker.choice = choices.get(box.clickedButton(), "skip")
-        if all_files.isChecked():
+        # A single-file task has only this conflict: keep the answer so that a
+        # resumed or restored copy does not ask it again.
+        if all_files.isChecked() or not record["task"].directory:
             record["task"].conflict = worker.choice
+            self.persist()
         worker.answer.set()
 
     def done(self, record, status):

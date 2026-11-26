@@ -639,7 +639,7 @@ def test_window_starts_with_saved_profiles(monkeypatch):
     import smftp.ui.main_window as module
     saved = [{"name": "Bengadok", "protocol": "SSH", "host": "vps.example", "user": "root", "port": 22},
              {"name": "Site", "protocol": "SFTP", "host": "files.example", "user": "web", "port": 22}]
-    monkeypatch.setattr(module, "load_sites", lambda: [dict(site) for site in saved])
+    monkeypatch.setattr(module, "load_sites", lambda *args: [dict(site) for site in saved])
     window = module.MainWindow()
     try:
         assert window.site_list.count() == 2

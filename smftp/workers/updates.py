@@ -9,6 +9,31 @@ from PySide6.QtCore import QThread, Signal
 
 CURRENT_VERSION = "1.1.0"
 RELEASES_API = "https://api.github.com/repos/Smeth/smftp/releases/latest"
+RELEASES_PAGE = "https://github.com/Smeth/smftp/releases/latest"
+DISTRIBUTIONS = ("github", "store", "uptodown")
+
+
+def distribution() -> str:
+    """Channel this copy was built for, written by build.ps1 -Distribution.
+
+    The Microsoft Store updates the applications it installs: that build must not
+    offer a second update channel.
+    """
+    import os
+    from pathlib import Path
+    value = os.environ.get("SMFTP_DISTRIBUTION", "")
+    if not value:
+        try:
+            marker = Path(__file__).resolve().parents[2] / "resources" / "distribution.txt"
+            value = marker.read_text(encoding="utf-8")
+        except OSError:
+            value = ""
+    value = value.strip().lower()
+    return value if value in DISTRIBUTIONS else "github"
+
+
+def checks_for_updates() -> bool:
+    return distribution() != "store"
 
 
 def parse_version(value):
@@ -38,9 +63,15 @@ def fetch_latest_release():
         return {
             "status": "update",
             "version": version_text,
-            "url": release.get("html_url", "https://github.com/Smeth/smftp/releases/latest"),
+            "url": safe_release_url(release.get("html_url")),
         }
     return {"status": "current", "version": CURRENT_VERSION}
+
+
+def safe_release_url(value) -> str:
+    """Only open this project's GitHub pages, whatever the API answered."""
+    text = str(value or "")
+    return text if text.startswith("https://github.com/Smeth/smftp/") else RELEASES_PAGE
 
 
 class UpdateWorker(QThread):

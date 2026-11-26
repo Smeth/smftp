@@ -1,7 +1,7 @@
 """Serialized network operations running outside the GUI thread."""
 import logging
 from PySide6.QtCore import QObject, Signal, Slot
-from smftp.core.clients import make_client, UnknownHostError, DestinationExists
+from smftp.core.clients import make_client, UnknownHostError, DestinationExists, FTPClient
 from smftp.models.entries import Connection
 from smftp.utils.storage import data_dir
 from smftp.core.errors import describe_error

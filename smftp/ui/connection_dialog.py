@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox, QSpin
 from smftp.models.entries import Connection, PROTOCOL_LABELS, DEFAULT_PORTS, ENCODINGS, normalize_encoding, uses_ssh
 from smftp.ui.icons import icon_button, make_icon, theme_of, recolor
 
-DEFAULT_PROTOCOL = "FTP"
+DEFAULT_PROTOCOL = "SFTP"  # Encrypted by default; plain FTP stays one choice away.
 # URL scheme -> stored protocol. ftps:// is implicit TLS by convention, ftpes:// explicit.
 SCHEMES = {"sftp": "SFTP", "ssh": "SSH", "ftp": "FTP", "ftps": "FTPSI", "ftpes": "FTPS"}
 
@@ -59,7 +59,23 @@ class ConnectionDialog(QDialog):
         self.save_only = False
         self.touched = False
         dark = theme_of(parent)
-        form = QFormLayout(self)
+        # The fields scroll when the screen is short (1080p at 150 %); the buttons stay visible.
+        from PySide6.QtWidgets import QScrollArea, QVBoxLayout, QWidget, QFrame, QAbstractScrollArea
+        outer = QVBoxLayout(self)
+        self.scroll = QScrollArea()
+        self.scroll.setObjectName("formScroll")
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setSizeAdjustPolicy(QAbstractScrollArea.SizeAdjustPolicy.AdjustToContents)
+        content = QWidget()
+        content.setObjectName("formContent")
+        self.scroll.setWidget(content)
+        self.scroll.viewport().setAutoFillBackground(False)
+        content.setAutoFillBackground(False)
+        outer.addWidget(self.scroll)
+        form = QFormLayout(content)
+        form.setContentsMargins(0, 0, 8, 0)
         self.form = form
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         heading = QLabel(self.tr("Connectez votre espace distant"))
@@ -167,7 +183,7 @@ class ConnectionDialog(QDialog):
         self.test_button.clicked.connect(self.test_connection)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
+        outer.addWidget(buttons)
         self.current_protocol = DEFAULT_PROTOCOL
         self.protocol.currentIndexChanged.connect(self.protocol_changed)
         self.name.textChanged.connect(self.validate)
@@ -207,6 +223,20 @@ class ConnectionDialog(QDialog):
         recolor(self, dark)
         self.validate()
         (self.password if site else self.host).setFocus()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Never taller than the screen: the form scrolls instead.
+        screen = self.screen() or (self.parentWidget().screen() if self.parentWidget() else None)
+        if screen is not None:
+            available = screen.availableGeometry()
+            limit = int(available.height() * 0.92)
+            self.setMaximumHeight(limit)
+            if self.height() > limit:
+                self.resize(self.width(), limit)
+            frame = self.frameGeometry()
+            if frame.bottom() > available.bottom() or frame.top() < available.top():
+                self.move(self.x(), max(available.top(), available.top() + (available.height() - frame.height()) // 2))
 
     def add_row(self, form, label, widget, required):
         text = self.tr(label) + (" *" if required else "")

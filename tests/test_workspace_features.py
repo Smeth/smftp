@@ -46,7 +46,9 @@ def test_key_picker_and_profile_paths(tmp_path, monkeypatch):
     path = tmp_path / "id_ed25519"
     path.write_text("test-key")
     dialog = ConnectionDialog()
-    assert not dialog.key_picker.isEnabled()  # FTP by default: SSH keys do not apply.
+    assert dialog.key_picker.isEnabled()  # SFTP by default: an SSH key may be chosen.
+    dialog.set_protocol("FTP")
+    assert not dialog.key_picker.isEnabled()  # SSH keys do not apply to FTP.
     dialog.set_protocol("SFTP")
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *args: (str(path), ""))
     dialog.key_picker.click()

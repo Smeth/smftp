@@ -95,8 +95,10 @@ Les tests démarrent des serveurs FTP et SSH/SFTP exclusivement sur `127.0.0.1`,
 ## Exécutable Windows
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .uild.ps1
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Distribution github
 ```
+
+`-Distribution` choisit le canal : `github` (par défaut) et `uptodown` gardent **Aide → Rechercher les mises à jour** ; `store` le retire, car le Microsoft Store met lui-même à jour les applications qu’il installe.
 
 Résultat : `dist/SMFTP/SMFTP.exe`, avec les licences dans `dist/SMFTP/licenses`. Distribuer **tout le dossier**. Le mode `--onedir` est volontaire : Qt, PySide6 et paramiko (LGPL) restent des fichiers séparés et remplaçables. Ne pas le remplacer par `--onefile` pour une distribution publique. Compiler séparément sur chaque OS ; sous Linux / macOS, le séparateur de `--add-data` est `:`.
 

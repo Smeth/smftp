@@ -30,3 +30,34 @@ def unique_copy_name(path, taken, directory=None):
         if not taken(candidate):
             return candidate
     raise FileExistsError("Aucun nom de copie disponible.")
+
+
+# Types that Windows runs, installs or interprets when they are "opened".
+EXECUTABLE_SUFFIXES = frozenset("""
+.exe .com .bat .cmd .pif .scr .cpl .msi .msp .mst .msc .msix .msixbundle .appx .appxbundle
+.appinstaller .application .appref-ms .gadget .hta .jar .js .jse .vbs .vbe .wsf .wsh .ws .wsc
+.ps1 .ps1xml .ps2 .psc1 .psd1 .psm1 .lnk .url .website .scf .inf .reg .rgs .chm .hlp .sct .shb
+.shs .settingcontent-ms .library-ms .search-ms .searchconnector-ms .diagcab .iso .img .vhd .vhdx
+.xbap .xll .py .pyw .pyz .pl .rb .sh
+""".split())
+
+
+def runs_when_opened(name: str) -> bool:
+    """True when opening the file with its Windows association may run code."""
+    suffix = Path(name).suffix.lower()
+    if suffix in EXECUTABLE_SUFFIXES:
+        return True
+    extra = os.environ.get("PATHEXT", "") if os.name == "nt" else ""
+    return bool(suffix) and suffix in {item.lower() for item in extra.split(";") if item}
+
+
+def mark_from_internet(path: str | Path) -> None:
+    """Add the Windows "Mark of the Web" so that SmartScreen and Office Protected
+    View treat a downloaded copy like a file from the Internet. Best effort."""
+    if os.name != "nt":
+        return
+    try:
+        with open(f"{path}:Zone.Identifier", "w", encoding="ascii") as stream:
+            stream.write("[ZoneTransfer]\r\nZoneId=3\r\n")
+    except OSError:
+        pass

@@ -107,6 +107,7 @@ def form_for(site=None):
 
 def test_same_server_account_is_refused():
     form = form_for()
+    form.set_protocol("FTP")  # "Production" is an FTP profile; the form defaults to SFTP.
     form.host.setText("ftp.a.test")
     form.user.setText("alice")
     assert "Production" in form.validation.text()

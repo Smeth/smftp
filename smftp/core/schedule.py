@@ -70,7 +70,10 @@ def normalize_recurrence(value) -> dict:
                 raise ValueError
         except ValueError:
             raise ValueError("Heure invalide : utilisez HH:MM.") from None
-        days = sorted({int(d) for d in value.get("days", range(7)) if str(d).isdigit() and 0 <= int(d) < 7})
+        days = value.get("days", range(7))
+        if not isinstance(days, (list, tuple, range)):
+            raise ValueError("Jours invalides.")
+        days = sorted({int(d) for d in days if str(d).isdigit() and 0 <= int(d) < 7})
         if not days:
             raise ValueError("Choisissez au moins un jour.")
         return {"type": "daily", "time": f"{hour:02d}:{minute:02d}", "days": days}
@@ -240,13 +243,33 @@ class ScheduleStore:
             except OSError:
                 problems.append("Fichier des tâches planifiées illisible.")
             return problems
-        for task in raw.get("tasks", []) if isinstance(raw, dict) else []:
+        if not isinstance(raw, dict):
+            raw = {}
+            problems.append("Fichier des tâches planifiées d’un format inconnu : aucune tâche chargée.")
+        tasks = raw.get("tasks", [])
+        if not isinstance(tasks, list):
+            tasks = []
+            problems.append("Liste des tâches planifiées illisible : aucune tâche chargée.")
+        for task in tasks:
             try:
                 self.tasks.append(normalize_task(task))
-            except ValueError as error:
-                problems.append(f"Tâche ignorée ({task.get('name', '?') if isinstance(task, dict) else '?'}) : {error}")
-        history = raw.get("history", []) if isinstance(raw, dict) else []
-        self.history = [row for row in history if isinstance(row, dict)][-HISTORY_LIMIT:]
+            except (TypeError, ValueError, AttributeError) as error:
+                label = str(task.get("name", "?")) if isinstance(task, dict) else "?"
+                detail = error if isinstance(error, ValueError) else "format inattendu"
+                problems.append(f"Tâche ignorée ({label}) : {detail}")
+        history = raw.get("history", [])
+        if not isinstance(history, list):
+            history = []
+        simple = (str, int, float, bool, type(None))
+        self.history = [row for row in history if isinstance(row, dict) and
+                        all(isinstance(value, simple) for value in row.values())][-HISTORY_LIMIT:]
+        if problems:
+            # The next save drops what could not be read: keep a copy of the original.
+            import shutil
+            try:
+                shutil.copy2(self.path, self.path.with_name(f"schedule.illisible-{now():%Y%m%d-%H%M%S}.json"))
+            except OSError:
+                pass
         # Runs that were in progress when SMFTP closed.
         for row in self.history:
             if row.get("status") == RUNNING:

@@ -118,6 +118,29 @@ class FTPClient(BaseClient):
     hash_method = None  # None = not detected yet, False = unsupported.
     auto_encoding = True
     identity = ""
+    list_all = None  # LIST -a: None = not tried yet, then True or False.
+
+    def exists(self, path: str) -> Entry | None:
+        found = super().exists(path)
+        if found is not None:
+            return found
+        # A listing may hide the file (dotfiles on vsftpd and similar servers):
+        # SIZE and MDTM ask the server about the file itself.
+        try:
+            self.ftp.sendcmd("TYPE I")
+            size = self.ftp.size(path)
+        except (ftplib.error_perm, ftplib.error_reply):
+            return None
+        if size is None:
+            return None
+        modified = 0.0
+        try:
+            reply = self.ftp.sendcmd(f"MDTM {path}")
+            stamp = reply[4:].strip().split(".")[0]
+            modified = datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp()
+        except (ftplib.error_perm, ftplib.error_reply, ValueError):
+            pass
+        return Entry(posixpath.basename(path), False, int(size), modified)
 
     def connect(self, connection: Connection) -> str:
         self.secrets = (connection.password,)
@@ -201,7 +224,25 @@ class FTPClient(BaseClient):
                 raise
             from smftp.core.listing import parse_list_line
             self.report("Statut : MLSD indisponible ; lecture de la liste avec LIST.")
-            lines = self.read_lines(f"LIST {path}")
+            # Without -a, servers such as vsftpd hide names starting with ".":
+            # .htaccess, and the hidden partial files of safe uploads.
+            lines = None
+            if self.list_all is not False:
+                try:
+                    lines = self.read_lines(f"LIST -a {path}" if path else "LIST -a")
+                except (ftplib.error_perm, ftplib.error_temp) as error:
+                    # Plain LIST below reports the real error, if any. Only a
+                    # syntax refusal means that this server never takes "-a".
+                    if str(error)[:3] in ("500", "501", "502", "504"):
+                        self.list_all = False
+                else:
+                    # A server that takes "-a" for a file name answers with an empty list.
+                    if not lines and self.list_all is None:
+                        lines = None
+                    elif self.list_all is None and lines:
+                        self.list_all = True
+            if lines is None:
+                lines = self.read_lines(f"LIST {path}" if path else "LIST")
             return [entry for line in lines if (entry := parse_list_line(line)) is not None and entry.name not in (".", "..")]
         rows = []
         for line in lines:

@@ -46,21 +46,43 @@ def configure_logging() -> bool:
     return True
 
 
-def load_sites() -> list[dict]:
+def load_sites(problems: list | None = None) -> list[dict]:
+    """Read the saved profiles. A file that cannot be read completely is kept aside
+    under another name, so that the next save cannot erase the profiles it holds;
+    ``problems`` then receives a message for the user."""
     from smftp.utils.profiles import normalize_profile, merge_profiles
+    import shutil
+    import time
+    path = data_dir() / "sites.json"
+    if problems is None:
+        problems = []
     try:
-        raw = json.loads((data_dir() / "sites.json").read_text(encoding="utf-8"))
-        if not isinstance(raw, list):
-            return []
-        clean = []
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError):
+        raw = None
+    clean = []
+    dropped = 0
+    if isinstance(raw, list):
         for site in raw:
             try:
                 clean.append(normalize_profile(site))
-            except (ValueError, TypeError):
-                continue
+            except (ValueError, TypeError, AttributeError, KeyError):
+                dropped += 1
+    if isinstance(raw, list) and not dropped:
         return merge_profiles([], clean)
-    except (OSError, ValueError, TypeError):
-        return []
+    backup = path.with_name(f"sites.illisible-{time.strftime('%Y%m%d-%H%M%S')}.json")
+    try:
+        shutil.copy2(path, backup)
+        kept = f" Une copie du fichier d’origine a été conservée sous {backup}."
+    except OSError:
+        kept = ""
+    if raw is None or not isinstance(raw, list):
+        problems.append("Le fichier des profils (sites.json) est illisible : aucun profil n’a pu être chargé." + kept)
+    else:
+        problems.append(f"{dropped} profil(s) illisible(s) dans sites.json ont été ignorés." + kept)
+    return merge_profiles([], clean)
 
 
 def save_sites(sites: list[dict]) -> None:

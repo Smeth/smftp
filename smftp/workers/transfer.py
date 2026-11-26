@@ -239,7 +239,9 @@ class TransferWorker(QThread):
                 # Created or changed since the comparison: never overwrite silently.
                 choice = self.conflict(str(local.name)) if self.task.conflict == "ask" else self.task.conflict
             else:
-                choice = ("overwrite" if self.task.upload and self.task.safe_upload else "resume") if self.task.resume else self.conflict(str(local.name))
+                # A resumed or restored task only resumes its own hidden partial file.
+                # An existing destination is the user's data: the conflict rule applies.
+                choice = self.conflict(str(local.name))
             if choice == "skip":
                 return source_size
             if choice in ("newer", "different"):
@@ -250,8 +252,10 @@ class TransferWorker(QThread):
                     return source_size
                 if choice == "newer" and source_date <= target_date + 2:
                     return source_size
-            resume = choice == "resume"
-            if resume and self.task.upload and not self.task.safe_upload:
+            # The download partial is tied to the remote identity: an approved
+            # overwrite may still continue it.
+            resume = choice == "resume" or (choice == "overwrite" and bool(self.task.resume))
+            if choice == "resume" and self.task.upload and not self.task.safe_upload:
                 offset = existing.size
                 if offset > source_size:
                     raise ValueError("Destination exceeds source size")

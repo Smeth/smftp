@@ -29,6 +29,11 @@ def main() -> None:
     if not logging_available:
         window.log(window.tr("Le journal sur disque est indisponible. Vérifiez les droits du dossier utilisateur."))
     window.show()
+    if window.site_problems:
+        for problem in window.site_problems:
+            window.log(window.tr("Erreur : ") + problem)
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: QMessageBox.warning(window, window.tr("Profils"), "\n\n".join(window.site_problems)))
     if "--smoke-test" in sys.argv:
         from PySide6.QtCore import QTimer
         def finish_smoke() -> None:

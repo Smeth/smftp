@@ -1,4 +1,4 @@
-"""New-connection form: FTP default, required markers, in-field password toggle, pasted URLs."""
+"""New-connection form: SFTP default, required markers, in-field password toggle, pasted URLs."""
 import pytest
 from PySide6.QtWidgets import QApplication, QLineEdit
 from smftp.ui.connection_dialog import ConnectionDialog, parse_address
@@ -9,9 +9,9 @@ def dialog():
     return ConnectionDialog()
 
 
-def test_defaults_to_ftp_and_marks_required_fields():
+def test_defaults_to_sftp_and_marks_required_fields():
     form = dialog()
-    assert form.protocol_value() == "FTP" and form.port.value() == 21
+    assert form.protocol_value() == "SFTP" and form.port.value() == 22
     assert form.windowTitle() == "Nouvelle connexion"
     for label in ("Protocole", "Hôte", "Port", "Utilisateur"):
         assert form.labels[label].text().endswith("*")
