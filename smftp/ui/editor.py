@@ -81,10 +81,30 @@ class CodeEdit(QPlainTextEdit):
             block = block.next()
 
 
-def detect_format(raw: bytes):
+def detect_encoding(raw: bytes) -> str:
+    """UTF-8 when the bytes are valid UTF-8, else Windows-1252 (old French websites),
+    else Latin-1. Binary content (NUL bytes) raises UnicodeError."""
+    if b"\x00" in raw[:65536]:
+        raise UnicodeError("Contenu binaire")
+    try:
+        raw.decode("utf-8")
+        return "utf-8"
+    except UnicodeDecodeError:
+        pass
+    try:
+        raw.decode("cp1252")
+        return "cp1252"
+    except UnicodeDecodeError:
+        return "latin-1"
+
+
+ENCODING_LABELS = {"utf-8": "UTF-8", "cp1252": "Windows-1252", "latin-1": "ISO-8859-1"}
+
+
+def detect_format(raw: bytes, encoding: str = "utf-8"):
     """Return (text, newline, bom) so that saving keeps the original file format."""
-    bom = raw.startswith(b"\xef\xbb\xbf")
-    text = raw.decode("utf-8-sig" if bom else "utf-8")
+    bom = encoding == "utf-8" and raw.startswith(b"\xef\xbb\xbf")
+    text = raw.decode("utf-8-sig" if bom else encoding)
     crlf = text.count("\r\n")
     bare_lf = text.count("\n") - crlf
     bare_cr = text.count("\r") - crlf
@@ -105,10 +125,13 @@ class Editor(QDialog):
     def __init__(self, path: str, title: str, parent=None):
         super().__init__(parent)
         self.path = Path(path)
+        self.base_title = title
         self.setWindowTitle(title)
         self.resize(900, 640)
         self.dirty = False
-        text, self.newline, self.bom = detect_format(self.path.read_bytes())
+        raw = self.path.read_bytes()
+        self.encoding = detect_encoding(raw)
+        text, self.newline, self.bom = detect_format(raw, self.encoding)
         layout = QVBoxLayout(self)
         self.message = QLabel(self.tr("Enregistrez pour envoyer les modifications au serveur."))
         layout.addWidget(self.message)
@@ -244,15 +267,33 @@ class Editor(QDialog):
     def update_status(self):
         cursor = self.text.textCursor()
         self.status.setText(self.tr("Ligne %s, colonne %s") % (cursor.blockNumber() + 1, cursor.positionInBlock() + 1)
-                            + f"    UTF-8{' avec BOM' if self.bom else ''} · {self.NEWLINES[self.newline]}")
+                            + f"    {ENCODING_LABELS.get(self.encoding, self.encoding)}{' avec BOM' if self.bom else ''}"
+                            f" · {self.NEWLINES[self.newline]}")
 
     # ---------- state ----------
     def mark_dirty(self, modified=True):
         self.dirty = bool(modified)
+        # "*" in the title: unsaved changes, as in other editors.
+        self.setWindowTitle(("* " if self.dirty else "") + self.base_title)
 
     def save(self):
         try:
-            content = self.text.toPlainText().replace("\n", self.newline).encode("utf-8")
+            text = self.text.toPlainText().replace("\n", self.newline)
+            try:
+                content = text.encode(self.encoding)
+            except UnicodeEncodeError:
+                # New characters (emoji, €… in Latin-1) do not exist in the file's encoding.
+                if QMessageBox.question(
+                        self, self.tr("Encodage"),
+                        self.tr("Ce texte contient des caractères impossibles à écrire en %1, l’encodage d’origine du fichier.\n\n"
+                                "L’enregistrer en UTF-8 ? Vérifiez que le site ou le programme qui lit ce fichier accepte l’UTF-8.")
+                        .replace("%1", ENCODING_LABELS.get(self.encoding, self.encoding)),
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                    return
+                self.encoding = "utf-8"
+                content = text.encode("utf-8")
+                self.update_status()
             self.path.write_bytes((b"\xef\xbb\xbf" if self.bom else b"") + content)
             self.text.document().setModified(False)
             self.dirty = False

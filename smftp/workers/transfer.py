@@ -90,6 +90,9 @@ class TransferWorker(QThread):
         self.listings = {}
         self.remote_entries = {}
         self.verify = True  # Compare a content fingerprint after each file.
+        self.conflict_details = {}  # Sizes and dates shown with the conflict question.
+        self.known_remote = {}  # Folder uploads: remote path -> Entry or None, read once per folder.
+        self.made_dirs = set()
         self.hash_warned = False
 
     def cancel(self):
@@ -192,11 +195,19 @@ class TransferWorker(QThread):
                 self.total_bytes = self.measure(client, local, remote)
                 self.done_bytes = 0
             if self.task.upload:
-                existing = client.exists(remote)
+                existing = self.remote_lookup(client, remote)
                 if existing and not existing.is_dir:
                     raise FileExistsError
                 if not existing:
                     client.mkdir(remote)
+                    listing = []
+                else:
+                    listing = client.listdir(remote)
+                self.made_dirs.add(remote)
+                for entry in listing:
+                    self.known_remote[posixpath.join(remote, entry.name)] = entry
+                for name in {child.name for child in local.iterdir()} - {entry.name for entry in listing}:
+                    self.known_remote[posixpath.join(remote, name)] = None
                 for child in local.iterdir():
                     from smftp.workers.sync import is_junction
                     if child.is_symlink() or is_junction(child):
@@ -220,6 +231,12 @@ class TransferWorker(QThread):
         if self.total_bytes is not None:
             self.done_bytes += size
 
+    def remote_lookup(self, client, remote):
+        """Entry of a remote path, from the folder listing already read when possible."""
+        if remote in self.known_remote:
+            return self.known_remote.pop(remote)
+        return client.exists(remote)
+
     def matches_plan(self, existing) -> bool:
         size, modified = self.task.expected
         if self.task.upload:
@@ -229,7 +246,9 @@ class TransferWorker(QThread):
     def copy_file(self, client, local: Path, remote: str) -> int:
         """Copy one file and return its source size, also counted when skipped."""
         if self.task.upload:
-            client.makedirs(posixpath.dirname(remote))
+            if posixpath.dirname(remote) not in self.made_dirs:
+                client.makedirs(posixpath.dirname(remote))
+                self.made_dirs.add(posixpath.dirname(remote))
             source = None
             source_size = local.stat().st_size
         else:
@@ -237,13 +256,20 @@ class TransferWorker(QThread):
             if source is None or source.is_dir:
                 raise FileNotFoundError(remote)
             source_size = source.size
-        existing = client.exists(remote) if self.task.upload else (local.stat() if local.exists() else None)
+        existing = self.remote_lookup(client, remote) if self.task.upload else (local.stat() if local.exists() else None)
         if self.already_completed(local, remote, source, existing):
             self.report_activity(f"Statut : déjà copié lors d’une tentative précédente, ignoré : {local.name}")
             return source_size
         offset = 0
         resume = bool(self.task.resume)
         if existing:
+            if self.task.upload:
+                info = local.stat()
+                source_meta, target_meta = (info.st_size, info.st_mtime), (existing.size, existing.modified)
+            else:
+                source_meta, target_meta = (source.size, source.modified), (existing.st_size, existing.st_mtime)
+            self.conflict_details = dict(name=local.name, upload=self.task.upload, source=source_meta,
+                                         target=target_meta, destination=remote if self.task.upload else str(local))
             if self.task.planned and self.task.expected is not None and self.matches_plan(existing):
                 choice = "overwrite"
             elif self.task.planned:

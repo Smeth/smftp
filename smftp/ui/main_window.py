@@ -132,6 +132,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         main.addWidget(panels)
         tabs = QTabWidget()
         self.activity_tabs = tabs
+        tabs.setMinimumHeight(170)  # Toolbar, headers and a few rows stay visible.
         self.logs = QPlainTextEdit()
         self.logs.setReadOnly(True)
         self.logs.document().setMaximumBlockCount(1000)
@@ -1132,7 +1133,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             self.editors.append(dialog)
             dialog.show()
         except (OSError, UnicodeError):
-            self.on_error(self.tr("L’éditeur intégré prend en charge les fichiers texte UTF-8 et les images."))
+            self.on_error(self.tr("Ce fichier n’est pas du texte : l’éditeur intégré ouvre le texte (UTF-8, Windows-1252, "
+                                  "ISO-8859-1) et les images. Utilisez « Ouvrir dans l’éditeur système » ou téléchargez-le."))
 
     def external_changed(self, local):
         record = self.edit_records.get(local)

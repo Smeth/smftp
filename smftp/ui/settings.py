@@ -18,8 +18,8 @@ class SettingsDialog(QDialog):
         self.count.setRange(1, 5)
         self.count.setValue(settings.value("concurrency", 2, type=int))
         self.conflict = QComboBox()
-        for label, value in [("Demander", "ask"), ("Ignorer", "skip"), ("Renommer", "rename"),
-                             ("Source plus récente", "newer"), ("Taille différente", "different")]:
+        for label, value in [("Demander", "ask"), ("Écraser", "overwrite"), ("Ignorer", "skip"), ("Renommer", "rename"),
+                             ("Écraser si plus récent", "newer"), ("Écraser si la taille diffère", "different")]:
             self.conflict.addItem(self.tr(label), value)
         self.conflict.setCurrentIndex(max(0, self.conflict.findData(settings.value("conflict", "ask"))))
         self.local_picker = icon_button("folder", self.tr("Choisir le dossier local au démarrage…"),

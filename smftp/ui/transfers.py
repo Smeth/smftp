@@ -8,6 +8,18 @@ from smftp.ui.explorer import size_label
 from smftp.ui.icons import icon_button, set_icon
 
 
+def duration_label(seconds: float) -> str:
+    """Remaining time as "45 s", "3 min 05 s" or "1 h 02 min"."""
+    seconds = int(round(seconds))
+    if seconds < 60:
+        return f"{seconds} s"
+    minutes, seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes} min {seconds:02d} s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} h {minutes:02d} min"
+
+
 class Transfers(QWidget):
     activity = Signal(str)
     completed = Signal(object)
@@ -66,8 +78,11 @@ class Transfers(QWidget):
         self.tables = []
         for title in ["En cours", "Échoués", "Terminés"]:
             table = QTreeWidget()
-            table.setHeaderLabels(["Fichier", "Direction", "Progression", "Vitesse", "Restant", "Statut"])
+            table.setHeaderLabels([self.tr(label) for label in
+                                   ["Fichier", "Direction", "Progression", "Vitesse", "Restant", "Statut", "Taille", "Destination"]])
             table.setColumnWidth(0, 240)
+            table.setColumnWidth(5, 120)
+            table.setColumnWidth(6, 90)
             table.setColumnWidth(2, 180)
             table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
             table.itemSelectionChanged.connect(self.update_actions)
@@ -175,7 +190,12 @@ class Transfers(QWidget):
             self.activity.emit("Statut : ce transfert est déjà dans la file.")
             return None
         from pathlib import Path
-        item = QTreeWidgetItem([Path(task.local).name, "↑ Envoi" if task.upload else "↓ Réception", "", "—", "—", "En attente"])
+        server = f"{task.connection.user}@{task.connection.host}" if task.connection.host else ""
+        destination = f"{server}:{task.remote}" if task.upload else task.local
+        item = QTreeWidgetItem([Path(task.local).name, "↑ Envoi" if task.upload else "↓ Réception", "", "—", "—",
+                                "En attente", "—", destination])
+        item.setToolTip(7, (f"{task.local}  →  {server}:{task.remote}" if task.upload
+                            else f"{server}:{task.remote}  →  {task.local}"))
         self.tables[0].addTopLevelItem(item)
         progress = QProgressBar()
         progress.setRange(0, 100)
@@ -324,16 +344,43 @@ class Transfers(QWidget):
         self.speed_changed.emit(sum(r["speed"] for r in self.records if r["state"] == "active"))
         record["bar"].setValue(int(done / total * 100) if total else 0)
         record["item"].setText(3, f"{size_label(int(speed))}/s")
-        record["item"].setText(4, f"{int(max(total - done, 0) / speed)} s" if speed else "—")
+        record["item"].setText(4, duration_label(max(total - done, 0) / speed) if speed else "—")
+        if total:
+            record["item"].setText(6, size_label(int(total)))
 
     def resolve_conflict(self, record, name):
         box = QMessageBox(self)
         box.setWindowTitle(self.tr("Fichier existant"))
-        box.setText(self.tr("%s existe déjà. Quelle action souhaitez-vous ?") % name)
+        box.setText(self.tr("« %s » existe déjà à la destination. Que faire ?") % name)
+        details = getattr(record["worker"], "conflict_details", {}) or {}
+        if details:
+            from datetime import datetime
+
+            def describe(meta):
+                size, modified = meta
+                when = datetime.fromtimestamp(modified).strftime("%d/%m/%Y %H:%M") if modified else "date inconnue"
+                return f"{size_label(int(size))} — {when}"
+            upload = details.get("upload")
+            source_place, target_place = (self.tr("sur ce PC"), self.tr("sur le serveur")) if upload else \
+                (self.tr("sur le serveur"), self.tr("sur ce PC"))
+            newer = details["source"][1] > details["target"][1] + 2
+            box.setInformativeText(
+                self.tr("Fichier à copier (%1) : %2").replace("%1", source_place).replace("%2", describe(details["source"]))
+                + "\n" + self.tr("Fichier existant (%1) : %2").replace("%1", target_place).replace("%2", describe(details["target"]))
+                + "\n\n" + (self.tr("Le fichier à copier est le plus récent.") if newer
+                             else self.tr("Le fichier existant n’est pas plus ancien.")))
+            box.setDetailedText(details.get("destination", ""))
         choices = {}
-        for label, value in [("Écraser", "overwrite"), ("Ignorer", "skip"), ("Renommer", "rename"), ("Reprendre", "resume"),
-                             ("Source plus récente", "newer"), ("Taille différente", "different")]:
-            choices[box.addButton(self.tr(label), QMessageBox.ButtonRole.ActionRole)] = value
+        for label, value, tip in [
+                ("Écraser", "overwrite", "Remplacer le fichier existant."),
+                ("Ignorer", "skip", "Garder le fichier existant et passer au suivant."),
+                ("Renommer", "rename", "Copier sous un autre nom ; le fichier existant est gardé."),
+                ("Reprendre", "resume", "Continuer une copie interrompue de ce même fichier."),
+                ("Écraser si plus récent", "newer", "Remplacer seulement si le fichier à copier est plus récent."),
+                ("Écraser si la taille diffère", "different", "Remplacer seulement si les tailles sont différentes.")]:
+            button = box.addButton(self.tr(label), QMessageBox.ButtonRole.ActionRole)
+            button.setToolTip(self.tr(tip))
+            choices[button] = value
         from PySide6.QtWidgets import QCheckBox
         all_files = QCheckBox(self.tr("Appliquer aux autres conflits de ce transfert"))
         box.setCheckBox(all_files)
