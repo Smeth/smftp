@@ -91,3 +91,28 @@ QStatusBar::item { border: none; }
 QWidget#tabCorner { background: transparent; }
 QMenuBar::item:disabled { color: #b4bccb; }
 QScrollArea#formScroll, QWidget#formContent { background: transparent; border: none; }
+/* Completed theme: horizontal scroll bars, spin box arrows, menus, tooltips, progress bars. */
+QScrollBar:horizontal { background: #f4f6fa; height: 10px; }
+QScrollBar::handle:horizontal { background: #c4d0e3; min-width: 24px; border-radius: 4px; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }
+QScrollBar::handle:hover { background: #a9b8d0; }
+QAbstractScrollArea::corner { background: #f4f6fa; }
+QSpinBox::up-arrow { image: url(@THEMES@/arrow-up-light.svg); width: 8px; height: 5px; }
+QSpinBox::down-arrow { image: url(@THEMES@/arrow-down-light.svg); width: 8px; height: 5px; }
+QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: #dbe5f4; }
+QSpinBox::up-arrow:disabled, QSpinBox::down-arrow:disabled { image: none; }
+QMenu { background: #ffffff; color: #26354c; border: 1px solid #d8e0ec; padding: 4px; }
+QMenu::item { padding: 6px 24px 6px 14px; border-radius: 4px; }
+QMenu::item:selected { background: #dce9ff; color: #1c51a5; }
+QMenu::item:disabled { color: #9aa6b8; }
+QMenu::separator { height: 1px; background: #d8e0ec; margin: 4px 6px; }
+QMenuBar::item:selected { background: #dce9ff; color: #1c51a5; border-radius: 4px; }
+QToolTip { background: #ffffff; color: #26354c; border: 1px solid #d8e0ec; padding: 5px; }
+QProgressBar { background: #f4f6fa; border: 1px solid #d8e0ec; border-radius: 4px; text-align: center; color: #26354c; }
+QProgressBar::chunk { background: #5788f3; border-radius: 3px; }
+QComboBox QAbstractItemView { background: #ffffff; color: #26354c; selection-background-color: #dce9ff; selection-color: #1c51a5; }
+
+/* Secondary text readable on white (WCAG AA, 4.5:1 at least). */
+QLabel#muted, QLabel#emptyState { color: #5d6a80; }
+QLabel#hint { color: #5d6a80; }

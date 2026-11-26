@@ -91,3 +91,26 @@ QStatusBar::item { border: none; }
 QWidget#tabCorner { background: transparent; }
 QMenuBar::item:disabled { color: #4a5466; }
 QScrollArea#formScroll, QWidget#formContent { background: transparent; border: none; }
+/* Completed theme: horizontal scroll bars, spin box arrows, menus, tooltips, progress bars. */
+QScrollBar:horizontal { background: #171b23; height: 10px; }
+QScrollBar::handle:horizontal { background: #38465d; min-width: 24px; border-radius: 4px; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }
+QScrollBar::handle:hover { background: #4a5d7c; }
+QAbstractScrollArea::corner { background: #171b23; }
+QSpinBox::up-arrow { image: url(@THEMES@/arrow-up-dark.svg); width: 8px; height: 5px; }
+QSpinBox::down-arrow { image: url(@THEMES@/arrow-down-dark.svg); width: 8px; height: 5px; }
+QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: #33425a; }
+QSpinBox::up-arrow:disabled, QSpinBox::down-arrow:disabled { image: none; }
+QMenu { background: #1c2330; color: #dce4ef; border: 1px solid #303b4d; padding: 4px; }
+QMenu::item { padding: 6px 24px 6px 14px; border-radius: 4px; }
+QMenu::item:selected { background: #263e63; color: #e5efff; }
+QMenu::item:disabled { color: #5a6475; }
+QMenu::separator { height: 1px; background: #303b4d; margin: 4px 6px; }
+QMenuBar::item:selected { background: #263e63; color: #e5efff; border-radius: 4px; }
+QToolTip { background: #1c2330; color: #dce4ef; border: 1px solid #303b4d; padding: 5px; }
+QProgressBar { background: #171b23; border: 1px solid #303b4d; border-radius: 4px; text-align: center; color: #dce4ef; }
+QProgressBar::chunk { background: #5788f3; border-radius: 3px; }
+QComboBox QAbstractItemView { background: #1c2330; color: #dce4ef; selection-background-color: #263e63; selection-color: #e5efff; }
+
+QLabel#hint { color: #8794a9; }

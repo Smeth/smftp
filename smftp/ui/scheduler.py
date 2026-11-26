@@ -13,7 +13,9 @@ from smftp.utils.storage import data_dir
 from PySide6.QtGui import QBrush, QColor
 
 # Readable on both themes.
-STATUS_COLORS = {S.SUCCESS: "#2e9d62", S.FAILED: "#d64545", S.PARTIAL: "#d08a1c", S.INTERRUPTED: "#d08a1c"}
+# Readable on the dark and on the light background respectively.
+STATUS_COLORS = {True: {S.SUCCESS: "#6fd39b", S.FAILED: "#ff8a8a", S.PARTIAL: "#f3c26b", S.INTERRUPTED: "#f3c26b"},
+                 False: {S.SUCCESS: "#1f7a4a", S.FAILED: "#c0392b", S.PARTIAL: "#9a6700", S.INTERRUPTED: "#9a6700"}}
 
 
 class Scheduler(QObject):
@@ -623,7 +625,7 @@ class ScheduleDialog(QDialog):
             item = QTreeWidgetItem([f"{started:%d/%m/%Y %H:%M}" if started else "", row.get("name", ""),
                                     row.get("status", ""), row.get("detail", "")])
             item.setToolTip(3, row.get("detail", ""))
-            color = STATUS_COLORS.get(row.get("status"))
+            color = STATUS_COLORS[theme_of(self)].get(row.get("status"))
             if color:
                 item.setForeground(2, QBrush(QColor(color)))
             self.history.addTopLevelItem(item)

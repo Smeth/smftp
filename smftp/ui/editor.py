@@ -8,14 +8,26 @@ from PySide6.QtWidgets import (QApplication, QDialog, QVBoxLayout, QHBoxLayout, 
                                QCheckBox, QInputDialog)
 
 
+# Keyword, number, string, comment, tag: each readable on its theme's background (4.5:1 at least).
+PALETTES = {
+    True: ("#b995ef", "#e6b36a", "#75bb9b", "#8191a6", "#78aff5"),
+    False: ("#6f42c1", "#953800", "#1a7f37", "#57606a", "#0550ae"),
+}
+
+
 class CodeHighlighter(QSyntaxHighlighter):
+    def __init__(self, document, dark=True):
+        super().__init__(document)
+        self.colors = PALETTES[bool(dark)]
+
     def highlightBlock(self, text):
+        keyword, number, string, comment, tag = self.colors
         rules = [
-            (r'\b(def|class|return|import|from|if|else|elif|for|while|try|except|with|as|async|await|function|const|let|var|export|true|false|null|None|True|False)\b', "#b995ef"),
-            (r'\b[0-9]+(?:\.[0-9]+)?\b', "#e6b36a"),
-            (r'"(?:[^"\\]|\\.)*"|\x27(?:[^\x27\\]|\\.)*\x27', "#75bb9b"),
-            (r'#[^\n]*|//[^\n]*', "#8191a6"),
-            (r'</?[\w:-]+|[\w-]+(?=\s*:)', "#78aff5"),
+            (r'\b(def|class|return|import|from|if|else|elif|for|while|try|except|with|as|async|await|function|const|let|var|export|true|false|null|None|True|False)\b', keyword),
+            (r'\b[0-9]+(?:\.[0-9]+)?\b', number),
+            (r'"(?:[^"\\]|\\.)*"|\x27(?:[^\x27\\]|\\.)*\x27', string),
+            (r'#[^\n]*|//[^\n]*', comment),
+            (r'</?[\w:-]+|[\w-]+(?=\s*:)', tag),
         ]
         for pattern, color in rules:
             matches = QRegularExpression(pattern).globalMatch(text)
@@ -139,7 +151,8 @@ class Editor(QDialog):
         self.text.setFont(QFont("Consolas", 11))
         self.text.setPlainText(text)
         self.text.setAccessibleName(self.tr("Contenu du fichier"))
-        self.highlighter = CodeHighlighter(self.text.document())
+        from smftp.ui.icons import theme_of
+        self.highlighter = CodeHighlighter(self.text.document(), theme_of(parent))
         # Only real content edits change the document's modification flag;
         # formatting applied by the highlighter does not.
         self.text.document().setModified(False)

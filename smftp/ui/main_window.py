@@ -19,6 +19,15 @@ from smftp.ui.workspace_features import WorkspaceFeatures
 from smftp.models.entries import protocol_label, is_terminal, uses_ssh
 
 
+def system_prefers_dark() -> bool:
+    """First launch: follow the Windows light / dark setting (Qt 6.5+); dark otherwise."""
+    from PySide6.QtGui import QGuiApplication
+    try:
+        return QGuiApplication.styleHints().colorScheme() != Qt.ColorScheme.Light
+    except AttributeError:
+        return True
+
+
 class MainWindow(WorkspaceFeatures, QMainWindow):
     connect_requested = Signal(object)
     list_requested = Signal(str)
@@ -159,7 +168,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.center = QStackedWidget()
         self.files_view = main
         self.center.addWidget(main)
-        self.terminal = TerminalArea(self.settings.value("dark", True, type=bool))
+        self.terminal = TerminalArea(self.settings.value("dark", system_prefers_dark(), type=bool))
         self.terminal.status.connect(self.log)
         self.terminal.failed.connect(self.terminal_failed)
         self.terminal.host_unknown.connect(self.terminal_host_unknown)
@@ -230,7 +239,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.tools_menu = tools_menu
         tools_menu.addAction(self.tr("Préférences…")).triggered.connect(self.preferences)
         tools_menu.addAction(self.tr("Synchroniser les dossiers…")).triggered.connect(self.synchronize)
-        self.dark = self.settings.value("dark", True, type=bool)
+        self.dark = self.settings.value("dark", system_prefers_dark(), type=bool)
         self.apply_theme()
         self.initialize_features()
         from smftp.ui.scheduler import Scheduler
@@ -956,7 +965,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         table = QTreeWidget()
         table.setHeaderLabels([self.tr("Élément"), self.tr("Action"), self.tr("Taille")])
         table.setColumnWidth(0, 450)
-        warning = QBrush(QColor("#d64545"))
+        warning = QBrush(QColor("#ff8a8a" if self.dark else "#c0392b"))
         for path, state, size, _ in plan:
             item = QTreeWidgetItem([path + ("/" if state == DELETE_DIR else ""), self.tr(state), "" if state == DELETE_DIR else size_label(size)])
             item.setCheckState(0, Qt.CheckState.Checked)
@@ -1300,7 +1309,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
     def apply_theme(self):
         name = "dark" if self.dark else "light"
         path = Path(__file__).resolve().parents[2] / "resources" / "themes" / f"{name}.qss"
-        self.setStyleSheet(path.read_text(encoding="utf-8"))
+        # Image URLs in the style sheet point to this folder, wherever SMFTP is installed.
+        self.setStyleSheet(path.read_text(encoding="utf-8").replace("@THEMES@", path.parent.as_posix()))
         from smftp.ui.icons import recolor
         recolor(self, self.dark)
         if hasattr(self, "terminal"):
