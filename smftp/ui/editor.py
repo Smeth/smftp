@@ -6,16 +6,29 @@ from PySide6.QtGui import (QSyntaxHighlighter, QTextCharFormat, QColor, QFont, Q
 from PySide6.QtWidgets import (QApplication, QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QPlainTextEdit,
                                QPushButton, QLabel, QMessageBox, QScrollArea, QWidget, QLineEdit,
                                QCheckBox, QInputDialog)
+from smftp.ui.icons import resize_within_screen
+
+
+# Keyword, number, string, comment, tag: each readable on its theme's background (4.5:1 at least).
+PALETTES = {
+    True: ("#b995ef", "#e6b36a", "#75bb9b", "#8191a6", "#78aff5"),
+    False: ("#6f42c1", "#953800", "#1a7f37", "#57606a", "#0550ae"),
+}
 
 
 class CodeHighlighter(QSyntaxHighlighter):
+    def __init__(self, document, dark=True):
+        super().__init__(document)
+        self.colors = PALETTES[bool(dark)]
+
     def highlightBlock(self, text):
+        keyword, number, string, comment, tag = self.colors
         rules = [
-            (r'\b(def|class|return|import|from|if|else|elif|for|while|try|except|with|as|async|await|function|const|let|var|export|true|false|null|None|True|False)\b', "#b995ef"),
-            (r'\b[0-9]+(?:\.[0-9]+)?\b', "#e6b36a"),
-            (r'"(?:[^"\\]|\\.)*"|\x27(?:[^\x27\\]|\\.)*\x27', "#75bb9b"),
-            (r'#[^\n]*|//[^\n]*', "#8191a6"),
-            (r'</?[\w:-]+|[\w-]+(?=\s*:)', "#78aff5"),
+            (r'\b(def|class|return|import|from|if|else|elif|for|while|try|except|with|as|async|await|function|const|let|var|export|true|false|null|None|True|False)\b', keyword),
+            (r'\b[0-9]+(?:\.[0-9]+)?\b', number),
+            (r'"(?:[^"\\]|\\.)*"|\x27(?:[^\x27\\]|\\.)*\x27', string),
+            (r'#[^\n]*|//[^\n]*', comment),
+            (r'</?[\w:-]+|[\w-]+(?=\s*:)', tag),
         ]
         for pattern, color in rules:
             matches = QRegularExpression(pattern).globalMatch(text)
@@ -68,8 +81,11 @@ class CodeEdit(QPlainTextEdit):
 
     def paint_gutter(self, event):
         painter = QPainter(self.gutter)
-        painter.fillRect(event.rect(), self.palette().alternateBase())
-        painter.setPen(self.palette().placeholderText().color())
+        from smftp.ui.icons import theme_of
+        dark = theme_of(self)
+        # The palette's alternate base is white whatever the theme: use the theme's colors.
+        painter.fillRect(event.rect(), QColor("#0e131b" if dark else "#eef2f8"))
+        painter.setPen(QColor("#5d6a80" if dark else "#7a8699"))
         block = self.firstVisibleBlock()
         top = round(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
         height = self.fontMetrics().height()
@@ -81,10 +97,30 @@ class CodeEdit(QPlainTextEdit):
             block = block.next()
 
 
-def detect_format(raw: bytes):
+def detect_encoding(raw: bytes) -> str:
+    """UTF-8 when the bytes are valid UTF-8, else Windows-1252 (old French websites),
+    else Latin-1. Binary content (NUL bytes) raises UnicodeError."""
+    if b"\x00" in raw[:65536]:
+        raise UnicodeError("Contenu binaire")
+    try:
+        raw.decode("utf-8")
+        return "utf-8"
+    except UnicodeDecodeError:
+        pass
+    try:
+        raw.decode("cp1252")
+        return "cp1252"
+    except UnicodeDecodeError:
+        return "latin-1"
+
+
+ENCODING_LABELS = {"utf-8": "UTF-8", "cp1252": "Windows-1252", "latin-1": "ISO-8859-1"}
+
+
+def detect_format(raw: bytes, encoding: str = "utf-8"):
     """Return (text, newline, bom) so that saving keeps the original file format."""
-    bom = raw.startswith(b"\xef\xbb\xbf")
-    text = raw.decode("utf-8-sig" if bom else "utf-8")
+    bom = encoding == "utf-8" and raw.startswith(b"\xef\xbb\xbf")
+    text = raw.decode("utf-8-sig" if bom else encoding)
     crlf = text.count("\r\n")
     bare_lf = text.count("\n") - crlf
     bare_cr = text.count("\r") - crlf
@@ -105,10 +141,13 @@ class Editor(QDialog):
     def __init__(self, path: str, title: str, parent=None):
         super().__init__(parent)
         self.path = Path(path)
+        self.base_title = title
         self.setWindowTitle(title)
-        self.resize(900, 640)
+        resize_within_screen(self, 900, 640)
         self.dirty = False
-        text, self.newline, self.bom = detect_format(self.path.read_bytes())
+        raw = self.path.read_bytes()
+        self.encoding = detect_encoding(raw)
+        text, self.newline, self.bom = detect_format(raw, self.encoding)
         layout = QVBoxLayout(self)
         self.message = QLabel(self.tr("Enregistrez pour envoyer les modifications au serveur."))
         layout.addWidget(self.message)
@@ -116,7 +155,8 @@ class Editor(QDialog):
         self.text.setFont(QFont("Consolas", 11))
         self.text.setPlainText(text)
         self.text.setAccessibleName(self.tr("Contenu du fichier"))
-        self.highlighter = CodeHighlighter(self.text.document())
+        from smftp.ui.icons import theme_of
+        self.highlighter = CodeHighlighter(self.text.document(), theme_of(parent))
         # Only real content edits change the document's modification flag;
         # formatting applied by the highlighter does not.
         self.text.document().setModified(False)
@@ -244,15 +284,33 @@ class Editor(QDialog):
     def update_status(self):
         cursor = self.text.textCursor()
         self.status.setText(self.tr("Ligne %s, colonne %s") % (cursor.blockNumber() + 1, cursor.positionInBlock() + 1)
-                            + f"    UTF-8{' avec BOM' if self.bom else ''} · {self.NEWLINES[self.newline]}")
+                            + f"    {ENCODING_LABELS.get(self.encoding, self.encoding)}{self.tr(' avec BOM') if self.bom else ''}"
+                            f" · {self.NEWLINES[self.newline]}")
 
     # ---------- state ----------
     def mark_dirty(self, modified=True):
         self.dirty = bool(modified)
+        # "*" in the title: unsaved changes, as in other editors.
+        self.setWindowTitle(("* " if self.dirty else "") + self.base_title)
 
     def save(self):
         try:
-            content = self.text.toPlainText().replace("\n", self.newline).encode("utf-8")
+            text = self.text.toPlainText().replace("\n", self.newline)
+            try:
+                content = text.encode(self.encoding)
+            except UnicodeEncodeError:
+                # New characters (emoji, €… in Latin-1) do not exist in the file's encoding.
+                if QMessageBox.question(
+                        self, self.tr("Encodage"),
+                        self.tr("Ce texte contient des caractères impossibles à écrire en %1, l’encodage d’origine du fichier.\n\n"
+                                "L’enregistrer en UTF-8 ? Vérifiez que le site ou le programme qui lit ce fichier accepte l’UTF-8.")
+                        .replace("%1", ENCODING_LABELS.get(self.encoding, self.encoding)),
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                    return
+                self.encoding = "utf-8"
+                content = text.encode("utf-8")
+                self.update_status()
             self.path.write_bytes((b"\xef\xbb\xbf" if self.bom else b"") + content)
             self.text.document().setModified(False)
             self.dirty = False
@@ -291,7 +349,7 @@ class ImagePreview(QDialog):
     def __init__(self, path, parent=None):
         super().__init__(parent)
         self.setWindowTitle(Path(path).name)
-        self.resize(800, 600)
+        resize_within_screen(self, 800, 600)
         self.pixmap = QPixmap(path)
         self.fit = True
         self.zoom = 1.0

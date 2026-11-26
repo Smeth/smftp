@@ -157,3 +157,73 @@ def test_diagnostic_and_about_dialogs_open(monkeypatch):
         assert "github.com/Smeth/smftp" in texts[1] and "PolyForm Noncommercial 1.0.0" in texts[1]
     finally:
         close_window(window)
+
+
+def test_local_folder_button_opens_chosen_folder(tmp_path, monkeypatch):
+    app()
+    from PySide6.QtWidgets import QFileDialog
+    from smftp.ui.explorer import Explorer
+    chosen = tmp_path / "chosen"
+    chosen.mkdir()
+    asked = []
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        lambda parent, title, start: asked.append(start) or str(chosen))
+    panel = Explorer(remote=False)
+    start = panel.path
+    panel.browse_button.click()
+    assert asked == [start]
+    assert panel.path == str(chosen.resolve())
+    panel.travel(-1)
+    assert panel.path == start
+
+
+def test_local_folder_button_cancel_keeps_folder(monkeypatch):
+    app()
+    from PySide6.QtWidgets import QFileDialog
+    from smftp.ui.explorer import Explorer
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *args: "")
+    panel = Explorer(remote=False)
+    start = panel.path
+    panel.browse_button.click()
+    assert panel.path == start
+
+
+def test_remote_panel_has_no_local_folder_button():
+    app()
+    from smftp.ui.explorer import Explorer
+    assert not hasattr(Explorer(remote=True), "browse_button")
+
+
+def test_preferences_folder_buttons_fill_fields(tmp_path, monkeypatch):
+    app()
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QFileDialog
+    from smftp.ui.settings import SettingsDialog
+    settings = QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat)
+    settings.setValue("local_directory", str(tmp_path))
+    chosen = tmp_path / "chosen"
+    chosen.mkdir()
+    asked = []
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        lambda parent, title, start: asked.append(start) or chosen.as_posix())
+    dialog = SettingsDialog(settings)
+    dialog.local_picker.click()
+    assert asked == [str(tmp_path)]
+    assert dialog.local.text() == str(chosen)
+    dialog.temp_picker.click()
+    assert dialog.temp.text() == str(chosen)
+    dialog.persist(settings)
+    assert settings.value("local_directory") == str(chosen)
+
+
+def test_preferences_folder_button_cancel_keeps_value(tmp_path, monkeypatch):
+    app()
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QFileDialog
+    from smftp.ui.settings import SettingsDialog
+    settings = QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat)
+    settings.setValue("local_directory", r"D:\Projets")
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *args: "")
+    dialog = SettingsDialog(settings)
+    dialog.local_picker.click()
+    assert dialog.local.text() == r"D:\Projets"

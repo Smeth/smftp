@@ -5,27 +5,49 @@ import json
 import re
 from pathlib import Path
 import xml.etree.ElementTree as ET
-from smftp.models.entries import Connection
+from smftp.i18n import tr
+from smftp.models.entries import (Connection, DEFAULT_PORTS, DEFAULT_PROXY_PORTS, PROXY_TYPES,
+                                  normalize_encoding, normalize_offset)
 
 def normalize_profile(site: dict) -> dict:
     if not isinstance(site, dict):
-        raise ValueError("Le profil doit être un objet.")
+        raise ValueError(tr("Le profil doit être un objet."))
     protocol = site.get("protocol", "SFTP")
     host, user = site.get("host", ""), site.get("user", "")
-    port = int(site.get("port", 22 if protocol == "SFTP" else 21))
-    if protocol not in ("SFTP", "FTP", "FTPS") or not 1 <= port <= 65535:
-        raise ValueError("Protocole ou port invalide.")
+    port = int(site.get("port", DEFAULT_PORTS.get(protocol, 21)))
+    if protocol not in DEFAULT_PORTS or not 1 <= port <= 65535:
+        raise ValueError(tr("Protocole ou port invalide."))
     if not isinstance(host, str) or not host.strip() or any(c in host for c in "/\\@\r\n\t "):
-        raise ValueError("Hôte invalide : saisissez une adresse sans préfixe ftp:// ni chemin.")
+        raise ValueError(tr("Hôte invalide : saisissez une adresse sans préfixe ftp:// ni chemin."))
     if not isinstance(user, str) or not user.strip() or any(c in user for c in "\r\n"):
-        raise ValueError("Utilisateur manquant ou invalide.")
+        raise ValueError(tr("Utilisateur manquant ou invalide."))
+    proxy_type = str(site.get("proxy_type") or "none").lower()
+    if proxy_type not in PROXY_TYPES:
+        raise ValueError(tr("Type de proxy invalide."))
+    proxy_host = str(site.get("proxy_host") or "").strip()
+    proxy_port = int(site.get("proxy_port") or DEFAULT_PROXY_PORTS[proxy_type])
+    proxy_user = str(site.get("proxy_user") or "").strip()
+    if proxy_type == "none":
+        proxy_host, proxy_user = "", ""
+    else:
+        if not proxy_host or any(c in proxy_host for c in "/\\@\r\n\t "):
+            raise ValueError(tr("Proxy : hôte invalide."))
+        if not 1 <= proxy_port <= 65535:
+            raise ValueError(tr("Proxy : port invalide."))
+        if any(c in proxy_user for c in "\r\n") or len(proxy_user) > 255:
+            raise ValueError(tr("Proxy : nom d’utilisateur invalide."))
     return dict(host=host.strip(), user=user.strip(), protocol=protocol, port=port,
                 key_file=str(site.get("key_file", "")), remember=bool(site.get("remember", False)),
                 name=str(site.get("name", "")).strip() or host.strip(),
                 group=str(site.get("group", "")).strip(),
                 local_directory=str(site.get("local_directory", "")),
                 remote_directory=str(site.get("remote_directory", "")),
-                timeout=max(5, min(300, int(site.get("timeout", 20)))))
+                timeout=max(5, min(300, int(site.get("timeout", 20)))),
+                passive=site.get("passive", True) not in (False, "false", "0", 0),
+                encoding=normalize_encoding(site.get("encoding", "auto")),
+                proxy_type=proxy_type, proxy_host=proxy_host, proxy_port=proxy_port, proxy_user=proxy_user,
+                use_agent=site.get("use_agent", False) not in (False, None, "false", "0", 0),
+                time_offset=normalize_offset(site.get("time_offset")))
 
 
 def profile_for(connection: Connection) -> dict:
@@ -61,27 +83,36 @@ def restore_credential(key: str, previous) -> None:
         keyring.set_password("SMFTP", key, previous)
 
 
+def filezilla_encoding(server):
+    """SMFTP encoding for a FileZilla server entry; None when the custom one is unknown."""
+    kind = (server.findtext("EncodingType") or "Auto").strip()
+    if kind in ("", "Auto"):
+        return "auto"
+    if kind == "UTF-8":
+        return "utf-8"
+    custom = (server.findtext("CustomEncoding") or "").strip()
+    value = normalize_encoding(custom)
+    return value if value != "auto" else None
+
+
 def ignored_filezilla_options(server) -> list[str]:
     """FileZilla settings that SMFTP profiles do not carry over."""
     ignored = []
-    if (server.findtext("PasvMode") or "").strip() == "MODE_ACTIVE":
-        ignored.append("mode FTP actif (SMFTP utilise le mode passif)")
     offset = (server.findtext("TimezoneOffset") or "0").strip()
     if offset not in ("", "0"):
-        ignored.append(f"décalage horaire de {offset} min")
-    encoding = (server.findtext("EncodingType") or "Auto").strip()
-    if encoding not in ("", "Auto", "UTF-8"):
-        custom = (server.findtext("CustomEncoding") or "").strip()
-        ignored.append("encodage " + (custom or encoding))
+        ignored.append(tr("décalage horaire de {offset} min").format(offset=offset))
+    encoding = filezilla_encoding(server)
+    if encoding is None:
+        ignored.append(tr("encodage {name}").format(name=(server.findtext("CustomEncoding") or "").strip() or tr("inconnu")))
     connections = (server.findtext("MaximumMultipleConnections") or "0").strip()
     if connections not in ("", "0"):
-        ignored.append(f"limite de {connections} connexion(s)")
+        ignored.append(tr("limite de {count} connexion(s)").format(count=connections))
     if (server.findtext("BypassProxy") or "0").strip() == "1":
-        ignored.append("contournement du proxy")
+        ignored.append(tr("contournement du proxy"))
     if (server.findtext("Logontype") or "").strip() in ("3", "4"):
-        ignored.append("authentification interactive ou par compte (saisie demandée à la connexion)")
+        ignored.append(tr("authentification interactive ou par compte (saisie demandée à la connexion)"))
     if (server.findtext("Account") or "").strip():
-        ignored.append("compte FTP (ACCT)")
+        ignored.append(tr("compte FTP (ACCT)"))
     return ignored
 
 
@@ -91,6 +122,22 @@ def store_credential(connection: Connection) -> None:
         keyring.set_password("SMFTP", connection.identity, connection.password)
     elif keyring.get_password("SMFTP", connection.identity) is not None:
         keyring.delete_password("SMFTP", connection.identity)
+
+
+def proxy_key(identity_text: str) -> str:
+    """Vault entry of a profile's proxy password."""
+    return identity_text + "#proxy"
+
+
+def store_proxy_credential(connection: Connection) -> None:
+    """The proxy password lives in the vault only (never in sites.json): saved when
+    given for a profile with a proxy account, removed otherwise."""
+    import keyring
+    key = proxy_key(connection.identity)
+    if connection.proxy_type != "none" and connection.proxy_user and connection.proxy_password:
+        keyring.set_password("SMFTP", key, connection.proxy_password)
+    elif keyring.get_password("SMFTP", key) is not None:
+        keyring.delete_password("SMFTP", key)
 
 
 @dataclass
@@ -140,50 +187,73 @@ def repair_xml_header(data: bytes) -> tuple[bytes, list[str]]:
     return (header + text[declaration.end():]).encode(encoding), repairs
 
 
+def drop_network_paths(site: dict, label: str, result: "ImportResult") -> dict:
+    """An imported file may come from someone else: a network path in it would make
+    Windows authenticate to that server as soon as the profile is used."""
+    from smftp.utils.paths import is_network_path
+    fields = {"local_directory": tr("dossier local de départ"), "key_file": tr("clé SSH")}
+    for field, description in fields.items():
+        if is_network_path(site.get(field, "")):
+            result.warnings.append(tr("{label} : {description} sur un chemin réseau ({path}) non importé(e) ; "
+                                      "choisissez-le dans Modifier si vous lui faites confiance.").format(
+                label=label, description=description, path=site[field]))
+            site[field] = ""
+    return site
+
+
 def read_profiles(filename: str, *, repair_header: bool = False) -> ImportResult:
     path = Path(filename)
     if path.stat().st_size > 10 * 1024 * 1024:
-        raise ValueError("Fichier de configuration trop volumineux (maximum 10 Mo).")
+        raise ValueError(tr("Fichier de configuration trop volumineux (maximum 10 Mo)."))
     result = ImportResult()
     if path.suffix.lower() != ".xml":
         sites = json.loads(path.read_text(encoding="utf-8-sig"))
         if not isinstance(sites, list):
-            raise ValueError("Le fichier JSON doit contenir une liste de profils.")
+            raise ValueError(tr("Le fichier JSON doit contenir une liste de profils."))
         for site in sites:
             clean = normalize_profile(site)
-            result.profiles.append(clean)
+            result.profiles.append(drop_network_paths(clean, clean.get("name") or clean["host"], result))
         return result
     data = path.read_bytes()
     # Reject declarations even for UTF-16/32 documents (ElementTree accepts them).
     upper = data.replace(b"\x00", b"").upper()
     if b"<!DOCTYPE" in upper or b"<!ENTITY" in upper:
-        raise ValueError("Les déclarations DTD et les entités XML ne sont pas acceptées.")
+        raise ValueError(tr("Les déclarations DTD et les entités XML ne sont pas acceptées."))
     corrected, repairs = repair_xml_header(data)
     if repairs:
-        message = ('L’attribut standalone de la déclaration XML accepte uniquement "yes" ou "no", '
-                   'pas "true" ou "false".\nCorrection proposée : ' + "; ".join(repairs))
+        message = tr('L’attribut standalone de la déclaration XML accepte uniquement "yes" ou "no", '
+                     'pas "true" ou "false".\nCorrection proposée : {repairs}').format(repairs="; ".join(repairs))
         if not repair_header:
             raise XMLCorrectionRequired(message)
         data = corrected
-        result.warnings.append("En-tête corrigé uniquement pour cet import : " + "; ".join(repairs)
-                               + ". Le fichier d’origine n’a pas été modifié.")
+        result.warnings.append(tr("En-tête corrigé uniquement pour cet import : {repairs}. "
+                                  "Le fichier d’origine n’a pas été modifié.").format(repairs="; ".join(repairs)))
     try:
         root = ET.fromstring(data)
     except ET.ParseError as error:
         line, column = error.position
-        raise XMLImportError(f"Le fichier XML est invalide à la ligne {line}, colonne {column + 1}. "
-                             f"Détail du lecteur XML : {error}") from error
+        raise XMLImportError(tr("Le fichier XML est invalide à la ligne {line}, colonne {column}. "
+                                "Détail du lecteur XML : {detail}").format(line=line, column=column + 1, detail=error)) from error
     servers = root.findall(".//Server")
     if root.tag == "Server":
         servers = [root]
     if not servers:
-        raise ValueError("Aucun serveur FileZilla trouvé dans ce XML.")
+        raise ValueError(tr("Aucun serveur FileZilla trouvé dans ce XML."))
     parents = {child: parent for parent in root.iter() for child in parent}
     for number, server in enumerate(servers, 1):
-        label = server.findtext("Name") or server.findtext("Host") or f"Serveur {number}"
-        protocol = {"0": "FTP", "1": "SFTP", "4": "FTPS"}.get(server.findtext("Protocol", "0"))
+        label = server.findtext("Name") or server.findtext("Host") or tr("Serveur {number}").format(number=number)
+        # FileZilla: 0 = FTP with explicit TLS when available, 6 = plain FTP only.
+        code = (server.findtext("Protocol", "0") or "0").strip()
+        protocol = {"0": "FTPS", "1": "SFTP", "3": "FTPSI", "4": "FTPS", "6": "FTP"}.get(code)
+        protocol_note = {
+            "0": tr("{label} : FileZilla utilisait TLS « si disponible » ; SMFTP l’impose (FTPS explicite). "
+                    "Si le serveur ne propose pas TLS, choisissez FTP dans Modifier : la connexion ne sera pas chiffrée."),
+            "6": tr("{label} : FTP non chiffré, comme dans FileZilla : mot de passe et fichiers circulent en clair."),
+        }.get(code)
+        if protocol_note:
+            protocol_note = protocol_note.format(label=label)
         if not protocol:
-            result.warnings.append(f"{label} : protocole FileZilla non pris en charge (FTPS implicite, etc.).")
+            result.warnings.append(tr("{label} : protocole FileZilla non pris en charge (stockage cloud, etc.).").format(label=label))
             continue
         logon = server.findtext("Logontype", "1")
         user = server.findtext("User", "")
@@ -200,20 +270,24 @@ def read_profiles(filename: str, *, repair_header: bool = False) -> ImportResult
                 parent = parents.get(parent)
             remote_directory = server.findtext("RemoteDir", "")
             if remote_directory and not remote_directory.startswith(("/", ".")):
-                result.warnings.append(f"{label} : chemin distant FileZilla encodé non importé ; choisissez-le dans Modifier.")
+                result.warnings.append(tr("{label} : chemin distant FileZilla encodé non importé ; choisissez-le dans Modifier.").format(label=label))
                 remote_directory = ""
             site = normalize_profile(dict(host=server.findtext("Host", ""), user=user,
-                port=server.findtext("Port", "22" if protocol == "SFTP" else "21"),
+                port=server.findtext("Port", str(DEFAULT_PORTS[protocol])),
                 protocol=protocol, name=label, key_file=server.findtext("Keyfile", ""),
                 group=" / ".join(groups), local_directory=server.findtext("LocalDir", ""),
-                remote_directory=remote_directory))
+                remote_directory=remote_directory,
+                passive=(server.findtext("PasvMode") or "").strip() != "MODE_ACTIVE",
+                encoding=filezilla_encoding(server) or "auto"))
         except (ValueError, TypeError):
-            result.warnings.append(f"{label} : hôte, utilisateur ou port invalide ; profil ignoré.")
+            result.warnings.append(tr("{label} : hôte, utilisateur ou port invalide ; profil ignoré.").format(label=label))
             continue
-        result.profiles.append(site)
+        result.profiles.append(drop_network_paths(site, label, result))
+        if protocol_note:
+            result.warnings.append(protocol_note)
         ignored = ignored_filezilla_options(server)
         if ignored:
-            result.warnings.append(f"{label} : options FileZilla non reprises : " + ", ".join(ignored) + ".")
+            result.warnings.append(tr("{label} : options FileZilla non reprises : {options}.").format(label=label, options=", ".join(ignored)))
         password = server.find("Pass")
         if password is not None and password.text:
             encoding = password.get("encoding", "plain")
@@ -226,5 +300,5 @@ def read_profiles(filename: str, *, repair_header: bool = False) -> ImportResult
                     raise ValueError
                 result.passwords[identity(site)] = secret
             except (ValueError, UnicodeError):
-                result.warnings.append(f"{label} : mot de passe chiffré ou illisible ; saisissez-le à la connexion.")
+                result.warnings.append(tr("{label} : mot de passe chiffré ou illisible ; saisissez-le à la connexion.").format(label=label))
     return result

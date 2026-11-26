@@ -13,18 +13,26 @@ SMFTP est distribué sous la [PolyForm Noncommercial License 1.0.0](LICENSE.md).
 | cffi | MIT | Liaison C |
 | pycparser | BSD-3-Clause | Dépendance de cffi |
 | invoke | BSD-2-Clause | Dépendance de paramiko |
+| pyte | LGPL-3.0 | Émulation du terminal SSH |
+| wcwidth | MIT | Largeur des caractères (pyte) |
 | keyring, jaraco.classes, jaraco.context, jaraco.functools, more-itertools | MIT | Coffre-fort système |
 | pywin32-ctypes | BSD-3-Clause | Coffre-fort Windows |
+| anthropic (SDK Claude) | MIT | Assistant IA |
+| httpx2, idna | BSD-3-Clause | Requêtes HTTPS de l’assistant |
+| h11, anyio, sniffio, pydantic, pydantic-core, annotated-types, typing-inspection, jiter, docstring-parser | MIT (sniffio : MIT ou Apache-2.0) | Dépendances du SDK Claude |
+| opentelemetry-api | Apache-2.0 | Dépendance du SDK Claude |
+| certifi | MPL-2.0 | Certificats racines (utilisé sans modification) |
 | typing_extensions | PSF-2.0 | Compatibilité Python |
 | Python (interpréteur embarqué par PyInstaller) | PSF-2.0 | Exécution |
 | PyInstaller (chargeur de l’exécutable) | GPL-2.0 avec exception pour le chargeur | Construction uniquement |
 
-## Qt, PySide6 et paramiko (LGPL)
+## Qt, PySide6, paramiko et pyte (LGPL)
 
 Ces bibliothèques sont utilisées sans modification et restent des fichiers séparés dans le dossier de l’exécutable (`dist/SMFTP/_internal`). Vous pouvez les remplacer par une autre version compatible. Leur code source est disponible auprès de leurs projets :
 
 - Qt for Python : <https://code.qt.io/cgit/pyside/pyside-setup.git/> et <https://download.qt.io/official_releases/QtForPython/>
 - Qt : <https://download.qt.io/official_releases/qt/>
 - paramiko : <https://github.com/paramiko/paramiko>
+- pyte : <https://github.com/selectel/pyte>
 
 Les textes de la LGPL v3 et de la GPL v3, à laquelle la LGPL v3 renvoie, sont fournis dans [`licenses/`](licenses/). La LGPL v2.1 de paramiko est copiée depuis son paquet lors de la construction.

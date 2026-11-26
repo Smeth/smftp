@@ -21,6 +21,9 @@ def close_window(window):
     window.thread.finished.connect(loop.quit)
     QTimer.singleShot(2500, loop.quit)
     loop.exec()
+    from PySide6.QtCore import QCoreApplication, QEvent
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 # AUD-001 — corrigé.
@@ -82,7 +85,7 @@ def test_resume_must_not_report_success_with_wrong_download_content(ftp_server, 
     local = tmp_path / "partial.bin"
     local.write_bytes(b"old-data")
     worker = TransferWorker(Transfer(Connection("127.0.0.1", "test", "FTP", port, "secret"),
-                                    str(local), "/remote.bin", False, resume=True))
+                                    str(local), "/remote.bin", False, resume=True, conflict="overwrite"))
     worker.run()
     assert local.read_bytes() == b"new-data"
 
@@ -120,6 +123,7 @@ def test_directory_progress_must_measure_total_bytes(tmp_path):
             self.entries[remote] = Entry(Path(remote).name, False, size)
             callback(size, size)
         def replace(self, source, target): self.entries[target] = self.entries.pop(source)
+        def checksum(self, path): return None
 
     worker = TransferWorker(Transfer(Connection("audit.invalid", "audit"), str(folder), "/folder", True, True))
     progress = []
@@ -165,7 +169,8 @@ def test_resume_continues_matching_partial_download(ftp_server, tmp_path):
     (root / "remote.bin").write_bytes(b"0123456789")
     local = tmp_path / "remote.bin"
     connection = Connection("127.0.0.1", "test", "FTP", port, "secret")
-    worker = TransferWorker(Transfer(connection, str(local), "/remote.bin", False, resume=True))
+    # The server root is tmp_path: the destination exists, and its replacement was approved.
+    worker = TransferWorker(Transfer(connection, str(local), "/remote.bin", False, resume=True, conflict="overwrite"))
     # Simulate an interrupted download: the partial matches the remote identity.
     from smftp.core.clients import FTPClient
     client = FTPClient()

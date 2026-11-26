@@ -38,3 +38,88 @@ QPushButton#navigation:hover { background: #345584; border-color: #91b7ff; }
 QPushButton#navigation:pressed { background: #41689e; }
 QPushButton#navigation:focus { border: 2px solid #91b7ff; }
 QPushButton#navigation:disabled { background: #1c222d; color: #566176; border-color: #293242; }
+/* Icon-only actions (transfers, journal): disabled state is visible at a glance. */
+QToolButton#iconAction { background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 0px; }
+QToolButton#iconAction:hover { background: #263e63; border-color: #537db6; }
+QToolButton#iconAction:pressed { background: #345584; }
+QToolButton#iconAction:focus { border: 1px solid #91b7ff; }
+QToolButton#iconAction:disabled { background: transparent; border-color: transparent; }
+QFrame#toolSeparator { color: #303b4d; margin: 0px 6px; }
+/* Connection dialog: required fields, errors and the clear-text FTP warning. */
+QLabel#dialogTitle { font-size: 16px; font-weight: 600; color: #f4f7fd; }
+QLabel#error { color: #ff8a8a; }
+QLabel#warning { color: #f3c26b; }
+QLineEdit[invalid="true"] { border: 1px solid #e06c6c; }
+QPushButton#primary:disabled { background: #2a3a58; border-color: #2a3a58; color: #7d8aa1; }
+QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #6681a6; border-radius: 4px; background: #10151e; }
+QCheckBox::indicator:checked { background: #5788f3; border-color: #5788f3; }
+QLabel#success { color: #6fd39b; }
+/* Compact chrome: brand in the sidebar, global toggles in the menu bar corner. */
+QLabel#brand { font-size: 19px; padding-right: 0px; }
+QToolButton#cornerAction { background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 3px 8px; color: #c4d8ff; }
+QToolButton#cornerAction:hover { background: #263e63; border-color: #537db6; }
+QToolButton#cornerAction:checked { background: #263e63; border-color: #5788f3; color: #ffffff; }
+QPushButton#compact { padding: 4px 10px; font-size: 11px; }
+/* Assistant pane. */
+QFrame#assistantPane { background: #141922; border-left: 1px solid #293242; }
+QFrame#assistantHeader { background: #141922; border-bottom: 1px solid #293242; }
+QLabel#paneTitle { font-size: 14px; font-weight: 700; color: #f4f7fd; }
+QPushButton#providerChip { background: transparent; border: none; padding: 0px; color: #93b6ff; font-size: 11px; text-align: left; }
+QPushButton#providerChip:hover { color: #c4d8ff; text-decoration: underline; }
+QScrollArea#chatScroll, QWidget#chatBody { background: #141922; border: none; }
+QLabel#emptyTitle { font-size: 16px; font-weight: 700; color: #f4f7fd; }
+QPushButton#suggestion { text-align: left; padding: 9px 12px; background: #1a2130; border: 1px solid #2c3647; border-radius: 10px; color: #c9d6ea; }
+QPushButton#suggestion:hover { background: #22304a; border-color: #5788f3; color: #ffffff; }
+QLabel#hint { color: #6f7c91; font-size: 10px; }
+QFrame#bubbleUser { background: #2f5fc4; border-radius: 12px; }
+QFrame#bubbleUser QLabel { color: #ffffff; }
+QFrame#bubbleAssistant { background: #1d2533; border: 1px solid #2a3446; border-radius: 12px; }
+QFrame#bubbleError { background: #3a1f25; border: 1px solid #7a3340; border-radius: 12px; }
+QFrame#bubbleError QLabel { color: #ffb4bf; }
+QFrame#bubbleNote { background: transparent; border: 1px dashed #3a4659; border-radius: 12px; }
+QFrame#bubbleNote QLabel { color: #8794a9; }
+QFrame#composerArea { background: #141922; border-top: 1px solid #293242; }
+QFrame#composer { background: #10151e; border: 1px solid #303a4b; border-radius: 12px; }
+QPlainTextEdit#chatInput { background: transparent; border: none; padding: 4px 0px; color: #dce4ef; font-family: 'Segoe UI'; font-size: 12px; }
+QToolButton#sendButton { background: #5788f3; border: none; border-radius: 17px; }
+QToolButton#sendButton:hover { background: #709dff; }
+QToolButton#sendButton:disabled { background: #2a3a58; }
+QRadioButton { spacing: 8px; padding: 4px 0px; }
+QWidget#chatRow { background: transparent; }
+QPushButton#compact { padding: 2px 10px; }
+QStatusBar::item { border: none; }
+QWidget#tabCorner { background: transparent; }
+QMenuBar::item:disabled { color: #4a5466; }
+QScrollArea#formScroll, QWidget#formContent { background: transparent; border: none; }
+/* Completed theme: horizontal scroll bars, spin box arrows, menus, tooltips, progress bars. */
+QScrollBar:horizontal { background: #171b23; height: 10px; }
+QScrollBar::handle:horizontal { background: #38465d; min-width: 24px; border-radius: 4px; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }
+QScrollBar::handle:hover { background: #4a5d7c; }
+QAbstractScrollArea::corner { background: #171b23; }
+QSpinBox::up-arrow { image: url(@THEMES@/arrow-up-dark.svg); width: 8px; height: 5px; }
+QSpinBox::down-arrow { image: url(@THEMES@/arrow-down-dark.svg); width: 8px; height: 5px; }
+QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: #33425a; }
+QSpinBox::up-arrow:disabled, QSpinBox::down-arrow:disabled { image: none; }
+QMenu { background: #1c2330; color: #dce4ef; border: 1px solid #303b4d; padding: 4px; }
+QMenu::item { padding: 6px 24px 6px 14px; border-radius: 4px; }
+QMenu::item:selected { background: #263e63; color: #e5efff; }
+QMenu::item:disabled { color: #5a6475; }
+QMenu::separator { height: 1px; background: #303b4d; margin: 4px 6px; }
+QMenuBar::item:selected { background: #263e63; color: #e5efff; border-radius: 4px; }
+QToolTip { background: #1c2330; color: #dce4ef; border: 1px solid #303b4d; padding: 5px; }
+QProgressBar { background: #171b23; border: 1px solid #303b4d; border-radius: 4px; text-align: center; color: #dce4ef; }
+QProgressBar::chunk { background: #5788f3; border-radius: 3px; }
+QComboBox QAbstractItemView { background: #1c2330; color: #dce4ef; selection-background-color: #263e63; selection-color: #e5efff; }
+
+QLabel#hint { color: #8794a9; }
+/* Review fixes: server list without focus frame, visible check marks and radio buttons. */
+QListWidget#sites { outline: none; }
+QListWidget#sites::item:focus { border: none; }
+QCheckBox::indicator:checked { image: url(@THEMES@/check-dark.svg); }
+QRadioButton::indicator { width: 14px; height: 14px; border: 1px solid #6681a6; border-radius: 8px; background: #10151e; }
+QRadioButton::indicator:checked { background: #5788f3; border: 1px solid #5788f3; }
+QMenu::indicator { width: 14px; height: 14px; }
+QMenu::indicator:checked { image: url(@THEMES@/check-dark.svg); background: #5788f3; border-radius: 3px; }
+QMenu::indicator:unchecked { border: 1px solid #6681a6; border-radius: 3px; }

@@ -9,7 +9,7 @@ import shutil
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNTIME = ["PySide6", "paramiko", "keyring"]
+RUNTIME = ["PySide6", "paramiko", "pyte", "keyring", "anthropic"]
 LICENSE_FILE = re.compile(r"(LICEN[CS]E|COPYING|NOTICE|AUTHORS)", re.IGNORECASE)
 
 

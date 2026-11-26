@@ -35,8 +35,8 @@ def test_saved_profile_connects_without_dialog(monkeypatch):
                                     name="Production", group="Web", remote_directory="/www"))
         assert started[0].password == "stored-secret"
         assert started[0].remote_directory == "/www"
-        titles = [a.text() for a in window.menuBar().actions()]
-        assert titles == ["Fichier", "Édition", "Affichage", "Serveurs", "Transferts", "Outils", "Aide"]
+        titles = [a.text().replace("&", "") for a in window.menuBar().actions()]
+        assert titles == ["Fichier", "Édition", "Affichage", "Serveurs", "Signets", "Transferts", "Outils", "Aide"]
     finally:
         finish_window(window)
 
@@ -46,6 +46,10 @@ def test_key_picker_and_profile_paths(tmp_path, monkeypatch):
     path = tmp_path / "id_ed25519"
     path.write_text("test-key")
     dialog = ConnectionDialog()
+    assert dialog.key_picker.isEnabled()  # SFTP by default: an SSH key may be chosen.
+    dialog.set_protocol("FTP")
+    assert not dialog.key_picker.isEnabled()  # SSH keys do not apply to FTP.
+    dialog.set_protocol("SFTP")
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *args: (str(path), ""))
     dialog.key_picker.click()
     assert dialog.key.text() == str(path)
@@ -67,11 +71,22 @@ def test_close_can_be_cancelled(monkeypatch):
         questions.append(args)
         return QMessageBox.StandardButton.No
     monkeypatch.setattr(QMessageBox, "question", reject)
+    window.online = True  # A connection would be closed: SMFTP asks first.
     assert not window.close()
     assert window.isVisible()
     assert window.thread.isRunning()
     assert questions[0][-1] == QMessageBox.StandardButton.No
+    window.online = False
     monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+    finish_window(window)
+
+
+def test_closing_an_idle_window_asks_nothing(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.show()
+    app.processEvents()
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: pytest.fail("Nothing is running: no question"))
     finish_window(window)
 
 
@@ -108,13 +123,12 @@ def test_legacy_list_parsing():
 
 def test_ftp_list_fallback(monkeypatch):
     import ftplib
-    class Legacy:
-        def mlsd(self, path):
+    def read_lines(command):
+        if command.startswith("MLSD"):
             raise ftplib.error_perm("502 MLSD unavailable")
-        def retrlines(self, command, callback):
-            callback("-rw-r--r-- 1 user group 123 Jan 02 2025 file.txt")
+        return ["-rw-r--r-- 1 user group 123 Jan 02 2025 file.txt"]
     client = FTPClient()
-    client.ftp = Legacy()
+    client.read_lines = read_lines
     assert client.listdir("/")[0].name == "file.txt"
 
 
@@ -134,7 +148,8 @@ def test_atomic_upload_keeps_original_on_failed_rename(ftp_server, tmp_path, mon
     worker.run()
     assert results == ["Échoué"]
     assert target.read_text() == "old data"
-    assert list(root.glob(".target.txt.smftp-*.part"))
+    # The refused replacement leaves no hidden partial file behind on the server.
+    assert not list(root.glob(".target.txt.smftp-*.part"))
 
 
 def test_atomic_upload_replaces_after_full_upload(ftp_server, tmp_path):

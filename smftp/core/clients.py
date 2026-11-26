@@ -9,19 +9,21 @@ import stat
 import posixpath
 from pathlib import Path
 from smftp.models.entries import Connection, Entry
-from smftp.core.protocol_log import LoggedFTP, LoggedFTPS
+from smftp.core.protocol_log import LoggedFTP, LoggedFTPS, LoggedImplicitFTPS
+from smftp.core.checksum import ALGORITHMS, LABELS, normalize_algorithm, parse_digest
 from smftp.core.errors import redact
+from smftp.i18n import tr
 
 
 class UnknownHostError(Exception):
     def __init__(self, host: str, key_type: str, key: str, fingerprint: str):
-        super().__init__("L’identité de ce serveur doit être confirmée.")
+        super().__init__(tr("L’identité de ce serveur doit être confirmée."))
         self.host, self.key_type, self.key, self.fingerprint = host, key_type, key, fingerprint
 
 
 class DestinationExists(FileExistsError):
     def __init__(self, source: str, target: str):
-        super().__init__(f"La destination existe déjà : {target}")
+        super().__init__(tr("La destination existe déjà : {target}").format(target=target))
         self.source = source
         self.target = target
 
@@ -44,6 +46,13 @@ class BaseClient(ABC):
     @abstractmethod
     def close(self) -> None: ...
 
+    def abort(self) -> None:
+        """Called from another thread: make a blocking network call return at once."""
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def upload(self, local: str, remote: str, progress, offset: int = 0) -> None:
         raise NotImplementedError
 
@@ -52,6 +61,10 @@ class BaseClient(ABC):
 
     def mkdir(self, path: str) -> None:
         raise NotImplementedError
+
+    def checksum(self, path: str) -> tuple[str, str] | None:
+        """(hashlib algorithm, hex digest) computed by the server, or None if unsupported."""
+        return None
 
     def rename(self, source: str, target: str) -> None:
         raise NotImplementedError
@@ -72,15 +85,19 @@ class BaseClient(ABC):
             raise DestinationExists(source, target)
         moving = self.exists(source)
         if existing.is_dir or (moving and moving.is_dir):
-            raise IsADirectoryError("Le remplacement d’un dossier n’est pas pris en charge : renommez ou supprimez d’abord la destination.")
+            raise IsADirectoryError(tr("Le remplacement d’un dossier n’est pas pris en charge : renommez ou supprimez d’abord la destination."))
         self.overwrite_move(source, target)
 
-    def remove(self, path: str, directory: bool = False) -> None:
+    def remove(self, path: str, directory: bool = False, depth: int = 0) -> None:
         if directory:
+            if depth > 100:
+                raise ValueError(tr("Arborescence trop profonde (boucle de liens ?) ; suppression interrompue."))
             for item in self.listdir(path):
                 if item.name in (".", "..") or any(c in item.name for c in "/\\\x00"):
-                    raise ValueError("Nom distant invalide ; suppression interrompue.")
-                self.remove(posixpath.join(path, item.name), item.is_dir)
+                    raise ValueError(tr("Nom distant invalide ; suppression interrompue."))
+                # A link is removed itself, never followed into its target.
+                is_link = item.permissions.startswith("l")
+                self.remove(posixpath.join(path, item.name), item.is_dir and not is_link, depth + 1)
             self.rmdir(path)
         else:
             self.unlink(path)
@@ -102,49 +119,266 @@ class BaseClient(ABC):
                 raise NotADirectoryError(current)
 
 
+# Encoding found by "auto" for a server (connection identity -> codec), so that the
+# transfer connections opened later use the same one as the browsing session.
+detected_encodings = {}
+# Server clock offset found with MDTM (connection identity -> minutes), same purpose.
+detected_offsets = {}
+
+
+def proxy_module_error():
+    from smftp.core.protocol_log import ProxyActiveModeError
+    return ProxyActiveModeError(tr("Le mode actif est impossible à travers un proxy : "
+                                   "choisissez le mode passif dans le profil."))
+
+
+def round_offset(seconds: float) -> int | None:
+    """Minutes of a clock offset, to the quarter hour; None when it is not one.
+
+    LIST shows minutes and MDTM seconds: a real offset lands within two minutes
+    of a quarter hour. A file listed with its year only (00:00) does not.
+    """
+    quarters = round(seconds / 900)
+    if abs(seconds - quarters * 900) > 120 or abs(quarters) > 14 * 4:
+        return None
+    return quarters * 15
+
+
 class FTPClient(BaseClient):
     tls = False
+    implicit = False
+    hash_method = None  # None = not detected yet, False = unsupported.
+    auto_encoding = True
+    identity = ""
+    list_all = None  # LIST -a: None = not tried yet, then True or False.
+    hides_dotfiles = False  # True once a plain LIST was used (dotfiles may be missing).
+    incomplete_listing = False  # True once LIST lines could not be understood.
+    time_offset = None  # LIST times: server clock minus UTC in minutes; None = unknown.
+    offset_checked = False  # Automatic detection already done (or a manual offset).
+
+    def exists(self, path: str) -> Entry | None:
+        found = super().exists(path)
+        if found is not None:
+            return found
+        # A listing may hide the file (dotfiles on vsftpd and similar servers):
+        # SIZE and MDTM ask the server about the file itself.
+        try:
+            self.ftp.sendcmd("TYPE I")
+            size = self.ftp.size(path)
+        except (ftplib.error_perm, ftplib.error_reply):
+            return None
+        if size is None:
+            return None
+        modified = 0.0
+        try:
+            reply = self.ftp.sendcmd(f"MDTM {path}")
+            stamp = reply[4:].strip().split(".")[0]
+            modified = datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp()
+        except (ftplib.error_perm, ftplib.error_reply, ValueError):
+            pass
+        return Entry(posixpath.basename(path), False, int(size), modified)
 
     def connect(self, connection: Connection) -> str:
-        self.secrets = (connection.password,)
-        self.ftp = (LoggedFTPS(context=ssl.create_default_context())
-                    if self.tls else LoggedFTP())
+        self.secrets = (connection.password, connection.proxy_password)
+        self.timeout = connection.timeout
+        if self.implicit:
+            self.ftp = LoggedImplicitFTPS(context=ssl.create_default_context())
+        else:
+            self.ftp = (LoggedFTPS(context=ssl.create_default_context())
+                        if self.tls else LoggedFTP())
         self.ftp.trace = self.report
-        self.report(f"Statut : résolution de {connection.host} et connexion TCP au port {connection.port}…")
+        self.identity = connection.identity
+        self.time_offset = connection.time_offset
+        self.offset_checked = connection.time_offset is not None
+        if self.time_offset is None and self.identity in detected_offsets:
+            self.time_offset = detected_offsets[self.identity]
+            self.offset_checked = True
+        from smftp.core import proxy
+        if proxy.uses_proxy(connection):
+            if not connection.passive:
+                raise proxy_module_error()
+            self.report(tr("Statut : connexion par le proxy {proxy}…").format(proxy=proxy.describe(connection)))
+            self.ftp.open_socket = lambda host, port, timeout: proxy.open_socket(connection, host, port, timeout)
+        self.auto_encoding = connection.encoding == "auto"
+        # Set before connecting: ftplib builds the control-channel reader in connect().
+        self.ftp.encoding = (detected_encodings.get(self.identity, "utf-8") if self.auto_encoding
+                             else connection.encoding)
+        self.report(tr("Statut : résolution de {host} et connexion TCP au port {port}…").format(
+            host=connection.host, port=connection.port))
         self.ftp.connect(connection.host, connection.port, timeout=connection.timeout)
-        self.report("Statut : serveur FTP joignable ; authentification en cours…")
+        self.report(tr("Statut : serveur FTP joignable ; authentification en cours…"))
         self.ftp.login(connection.user, connection.password)
-        self.report("Statut : authentification FTP réussie.")
+        self.report(tr("Statut : authentification FTP réussie."))
+        self.ftp.set_pasv(connection.passive)
+        self.report(tr("Statut : mode de transfert passif (PASV).") if connection.passive else
+                    tr("Statut : mode de transfert actif (PORT) : le serveur se connecte à votre poste pour chaque transfert."))
         if self.tls:
             self.ftp.prot_p()
-            self.report("Statut : chiffrement TLS du canal de données activé.")
-        self.report("Statut : lecture du dossier de départ…")
+            self.report(tr("Statut : chiffrement TLS du canal de données activé."))
+        if self.auto_encoding and self.ftp.encoding == "utf-8":
+            try:
+                features = self.ftp.sendcmd("FEAT").upper().split()
+                if "UTF8" in features:
+                    self.ftp.sendcmd("OPTS UTF8 ON")
+            except ftplib.all_errors:
+                pass
+        self.report((tr("Statut : encodage des noms de fichiers : {encoding} (automatique).") if self.auto_encoding else
+                     tr("Statut : encodage des noms de fichiers : {encoding}.")).format(encoding=self.ftp.encoding))
+        self.report(tr("Statut : lecture du dossier de départ…"))
         return self.ftp.pwd()
+
+    def set_encoding(self, encoding: str) -> None:
+        """Switch the session's name encoding, control channel included."""
+        self.ftp.encoding = encoding
+        previous = self.ftp.file
+        self.ftp.file = self.ftp.sock.makefile("r", encoding=encoding)
+        if previous is not None:
+            previous.close()  # Closes the reader only; the socket stays open.
+        detected_encodings[self.identity] = encoding
+
+    def read_lines(self, command: str) -> list[str]:
+        """Run a listing command and decode it here, not in ftplib, so that a name in
+        another encoding never leaves the control channel out of step."""
+        self.ftp.sendcmd("TYPE A")
+        chunks = []
+        with self.ftp.transfercmd(command) as conn:
+            while True:
+                data = conn.recv(65536)
+                if not data:
+                    break
+                chunks.append(data)
+            if isinstance(conn, ssl.SSLSocket):
+                conn.unwrap()
+        self.ftp.voidresp()
+        raw = b"".join(chunks)
+        try:
+            text = raw.decode(self.ftp.encoding)
+        except UnicodeDecodeError:
+            if self.auto_encoding and self.ftp.encoding == "utf-8":
+                # Latin-1 maps every byte to one character and back: paths stay exact.
+                self.set_encoding("latin-1")
+                self.report(tr("Statut : noms de fichiers non UTF-8 ; passage automatique en ISO-8859-1 (Latin-1). "
+                               "Choisissez l’encodage exact dans le profil si des accents restent incorrects."))
+                text = raw.decode("latin-1")
+            else:
+                self.report(tr("Avertissement : certains noms ne sont pas valides en {encoding} ; "
+                               "ils sont affichés avec « � » et ne pourront pas être ouverts. Changez l’encodage du profil.")
+                            .format(encoding=self.ftp.encoding))
+                text = raw.decode(self.ftp.encoding, errors="replace")
+        return [line.rstrip("\r") for line in text.split("\n") if line.strip()]
 
     def listdir(self, path: str) -> list[Entry]:
         entries = []
         try:
-            rows = list(self.ftp.mlsd(path))
+            lines = self.read_lines(f"MLSD {path}" if path else "MLSD")
         except ftplib.error_perm as error:
             if str(error)[:3] not in ("500", "501", "502", "504"):
                 raise
-            from smftp.core.listing import parse_list_line
-            self.report("Statut : MLSD indisponible ; lecture de la liste avec LIST.")
-            lines = []
-            self.ftp.retrlines(f"LIST {path}", lines.append)
-            return [entry for line in lines if (entry := parse_list_line(line)) is not None and entry.name not in (".", "..")]
+            from smftp.core.listing import parse_listing
+            self.report(tr("Statut : MLSD indisponible ; lecture de la liste avec LIST."))
+            # Without -a, servers such as vsftpd hide names starting with ".":
+            # .htaccess, and the hidden partial files of safe uploads.
+            lines = None
+            if self.list_all is not False:
+                try:
+                    lines = self.read_lines(f"LIST -a {path}" if path else "LIST -a")
+                except (ftplib.error_perm, ftplib.error_temp) as error:
+                    # Plain LIST below reports the real error, if any. Only a
+                    # syntax refusal means that this server never takes "-a".
+                    if str(error)[:3] in ("500", "501", "502", "504"):
+                        self.list_all = False
+                else:
+                    # A server that takes "-a" for a file name answers with an empty list.
+                    if not lines and self.list_all is None:
+                        lines = None
+                    elif self.list_all is None and lines:
+                        self.list_all = True
+            if lines is None:
+                lines = self.read_lines(f"LIST {path}" if path else "LIST")
+                # This listing may leave out names starting with ".": mirror
+                # synchronization must not take them for missing files.
+                self.hides_dotfiles = True
+            if self.time_offset is None and not self.offset_checked:
+                self.detect_offset(path, parse_listing(lines, offset=0)[0])
+            entries, skipped = parse_listing(lines, offset=self.time_offset)
+            if skipped:
+                # Mirror synchronization must not take the missing names for deleted files.
+                self.incomplete_listing = True
+                self.report(tr("Avertissement : {count} ligne(s) de la liste de {path} n’ont pas pu être "
+                               "interprétées et ne sont pas affichées.").format(
+                    count=skipped, path=path or tr("ce dossier")))
+            return entries
+        rows = []
+        for line in lines:
+            found, _, name = line.partition(" ")
+            facts = {}
+            for fact in found[:-1].split(";"):
+                key, _, value = fact.partition("=")
+                facts[key.lower()] = value
+            rows.append((name, facts))
         for name, facts in rows:
-            if facts.get("type") in ("cdir", "pdir"):
+            kind = facts.get("type", "").lower()
+            if kind in ("cdir", "pdir"):
                 continue
+            # A malformed fact costs that value only, not the whole folder.
             modified = 0.0
-            if facts.get("modify"):
-                modified = datetime.strptime(facts["modify"].split(".")[0], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp()
-            entries.append(Entry(name, facts.get("type") == "dir", int(facts.get("size", 0)), modified, facts.get("unix.mode", facts.get("perm", ""))))
+            try:
+                if facts.get("modify"):
+                    modified = datetime.strptime(facts["modify"].split(".")[0], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp()
+            except ValueError:
+                pass
+            try:
+                size = int(facts.get("size", 0))
+            except ValueError:
+                size = 0
+            permissions = facts.get("unix.mode", facts.get("perm", ""))
+            if kind.startswith(("os.unix=slink", "os.unix=symlink")):
+                # Symbolic link (Pure-FTPd, ProFTPD): never followed nor counted as a file.
+                permissions = "l" + permissions
+                entries.append(Entry(name, False, 0, modified, permissions))
+                continue
+            entries.append(Entry(name, kind == "dir", size, modified, permissions))
         return entries
+
+    def detect_offset(self, path: str, entries: list[Entry]) -> None:
+        """LIST shows the server's local time, MDTM gives UTC: their difference on one
+        file is the server's offset, kept for the session (and its transfers)."""
+        files = [e for e in entries if not e.is_dir and not e.permissions.startswith("l") and e.modified]
+        if not files:
+            return  # Try again with the next listing.
+        self.offset_checked = True
+        candidate = max(files, key=lambda e: e.modified)  # Recent: listed with hours and minutes.
+        try:
+            reply = self.ftp.sendcmd(f"MDTM {posixpath.join(path, candidate.name) if path else candidate.name}")
+            stamp = reply[4:].strip().split(".")[0]
+            utc = datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp()
+        except Exception:  # Best effort: never makes the listing fail.
+            self.report(tr("Statut : MDTM indisponible ; les dates de la liste sont affichées sans correction de fuseau horaire."))
+            return
+        # The listing was read as if it were UTC: the difference is the server's offset.
+        minutes = round_offset(candidate.modified - utc)
+        if minutes is None:
+            self.report(tr("Statut : décalage horaire du serveur non déterminé ; dates de la liste non corrigées."))
+            return
+        self.time_offset = minutes
+        detected_offsets[self.identity] = minutes
+        from smftp.models.entries import format_offset
+        self.report(tr("Statut : heure du serveur détectée : {offset} (MDTM) ; dates de la liste corrigées.").format(
+            offset=format_offset(minutes)))
 
     def close(self) -> None:
         if hasattr(self, "ftp"):
             self.ftp.close()
+
+    def abort(self) -> None:
+        # shutdown() wakes a recv() blocked in the worker thread (a long server checksum).
+        import socket
+        for sock in (getattr(getattr(self, "ftp", None), "sock", None),):
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
 
     def upload(self, local, remote, progress, offset=0):
         done = offset
@@ -172,6 +406,62 @@ class FTPClient(BaseClient):
     def mkdir(self, path):
         self.ftp.mkd(path)
 
+    def detect_hash(self):
+        """HASH (draft-bryan-ftpext-hash) first, then the XSHA256/XSHA1/XMD5 extensions."""
+        try:
+            features = self.ftp.sendcmd("FEAT").splitlines()
+        except ftplib.all_errors:
+            features = []
+        names = {line.strip().split(" ", 1)[0].upper(): line.strip() for line in features[1:-1]}
+        if "HASH" in names:
+            offered = {}
+            for item in names["HASH"].split(" ", 1)[-1].split(";"):
+                algorithm = normalize_algorithm(item.rstrip("*"))
+                if algorithm:
+                    offered[algorithm] = item.endswith("*")
+            for algorithm in ALGORITHMS:
+                if algorithm in offered:
+                    if not offered[algorithm]:
+                        try:
+                            self.ftp.sendcmd(f"OPTS HASH {LABELS[algorithm]}")
+                        except ftplib.all_errors:
+                            continue
+                    return ("HASH", algorithm)
+        for command, algorithm in (("XSHA256", "sha256"), ("XSHA512", "sha512"), ("XSHA1", "sha1"), ("XMD5", "md5")):
+            if command in names:
+                return (command, algorithm)
+        return False
+
+    def checksum(self, path):
+        if self.hash_method is None:
+            self.hash_method = self.detect_hash()
+            if self.hash_method:
+                self.report(tr("Statut : empreinte serveur disponible ({method}).").format(
+                    method=f"{self.hash_method[0]} {LABELS[self.hash_method[1]]}"))
+        if not self.hash_method:
+            return None
+        command, algorithm = self.hash_method
+        sock = self.ftp.sock
+        previous = sock.gettimeout() if sock else None
+        try:
+            # Hashing a large file takes the server longer than a normal reply.
+            if sock:
+                sock.settimeout(max(previous or 0, 600))
+            response = self.ftp.sendcmd(f"{command} {path}")
+        except ftplib.error_perm:
+            return None
+        finally:
+            if sock:
+                sock.settimeout(previous)
+        if command == "HASH":
+            parts = response[4:].split(" ", 3)
+            if len(parts) < 3 or normalize_algorithm(parts[0]) != algorithm:
+                return None
+            digest = parse_digest(parts[2], algorithm)
+        else:
+            digest = parse_digest(response[4:], algorithm)
+        return (algorithm, digest) if digest else None
+
     def rename(self, source, target):
         self.ftp.rename(source, target)
 
@@ -194,14 +484,51 @@ class FTPSClient(FTPClient):
     tls = True
 
 
+class ImplicitFTPSClient(FTPClient):
+    """FTPS where TLS starts with the TCP connection (usually port 990)."""
+    tls = True
+    implicit = True
+
+
+def trust_host_key(error: UnknownHostError, known_hosts: str) -> None:
+    """Record a server key the user has just accepted."""
+    import paramiko
+    hosts = paramiko.HostKeys(known_hosts)
+    key = paramiko.PKey.from_type_string(error.key_type, base64.b64decode(error.key))
+    hosts.add(error.host, error.key_type, key)
+    hosts.save(known_hosts)
+
+
+def make_client(protocol: str, known_hosts: str, reporter=None) -> BaseClient:
+    if protocol == "SFTP":
+        return SFTPClient(known_hosts, reporter)
+    if protocol == "SSH":
+        return ShellClient(known_hosts, reporter)
+    return {"FTP": FTPClient, "FTPS": FTPSClient, "FTPSI": ImplicitFTPSClient}[protocol](reporter)
+
+
 class SFTPClient(BaseClient):
+    # Tried in order; a restricted account (internal-sftp) gets no output and is not retried.
+    HASH_COMMANDS = (("sha256", "sha256sum -b --"), ("sha256", "shasum -a 256 -b --"),
+                     ("sha1", "sha1sum -b --"), ("md5", "md5sum -b --"))
+
     def __init__(self, known_hosts: str, reporter=None):
         super().__init__(reporter)
         self.known_hosts = known_hosts
+        self.hash_command = None  # None = not detected, False = unsupported.
 
     def connect(self, connection: Connection) -> str:
+        self.open_ssh(connection)
+        self.report(tr("Statut : authentification SSH réussie ; ouverture du sous-système SFTP…"))
+        self.sftp = self.ssh.open_sftp()
+        self.sftp.get_channel().settimeout(connection.timeout)
+        self.report(tr("Statut : sous-système SFTP ouvert ; lecture du dossier de départ…"))
+        return self.sftp.normalize(".")
+
+    def open_ssh(self, connection: Connection) -> None:
+        """Connect and authenticate; an unknown server key raises UnknownHostError."""
         import paramiko
-        self.secrets = (connection.password,)
+        self.secrets = (connection.password, connection.proxy_password)
 
         class ConfirmHost(paramiko.MissingHostKeyPolicy):
             def missing_host_key(self, client, hostname, key):
@@ -210,38 +537,62 @@ class SFTPClient(BaseClient):
 
         self.ssh = paramiko.SSHClient()
         self.ssh.load_system_host_keys()
+        # A scheduled task or a transfer may be the first SSH connection ever made:
+        # a missing file only means that no server has been trusted yet.
+        known = Path(self.known_hosts)
+        if not known.exists():
+            known.parent.mkdir(parents=True, exist_ok=True)
+            known.touch()
         self.ssh.load_host_keys(self.known_hosts)
         self.ssh.set_missing_host_key_policy(ConfirmHost())
-        self.report(f"Statut : résolution de {connection.host} et connexion SSH au port {connection.port}…")
+        self.report(tr("Statut : résolution de {host} et connexion SSH au port {port}…").format(
+            host=connection.host, port=connection.port))
         reporter = self.report
         class ReportingTransport(paramiko.Transport):
             def start_client(self, *args, **kwargs):
-                reporter("Statut : connexion TCP établie ; négociation SSH en cours…")
+                reporter(tr("Statut : connexion TCP établie ; négociation SSH en cours…"))
                 result = super().start_client(*args, **kwargs)
-                reporter("Statut : négociation SSH terminée ; vérification de la clé du serveur…")
+                reporter(tr("Statut : négociation SSH terminée ; vérification de la clé du serveur…"))
                 return result
 
             def auth_password(self, *args, **kwargs):
-                reporter("Statut : clé du serveur acceptée ; authentification SSH par mot de passe…")
+                reporter(tr("Statut : clé du serveur acceptée ; authentification SSH par mot de passe…"))
                 return super().auth_password(*args, **kwargs)
 
             def auth_publickey(self, *args, **kwargs):
-                reporter("Statut : clé du serveur acceptée ; authentification SSH par clé privée…")
+                reporter(tr("Statut : clé du serveur acceptée ; authentification SSH par clé privée…"))
                 return super().auth_publickey(*args, **kwargs)
 
-        self.ssh.connect(connection.host, port=connection.port, username=connection.user,
-                         password=connection.password or None,
-                         key_filename=connection.key_file or None,
-                         passphrase=connection.password or None,
-                         timeout=connection.timeout, auth_timeout=connection.timeout,
-                         banner_timeout=connection.timeout, channel_timeout=connection.timeout,
-                         look_for_keys=False, allow_agent=False, transport_factory=ReportingTransport)
-        self.report("Statut : authentification SSH réussie ; ouverture du sous-système SFTP…")
+        from smftp.core import ppk, proxy
+        key_file, pkey = connection.key_file or None, None
+        if key_file and ppk.is_ppk(key_file):
+            # PuTTY format: read here, paramiko only knows OpenSSH / PEM files.
+            pkey = ppk.load_ppk(key_file, connection.password or None)
+            self.report(tr("Statut : clé PuTTY (.ppk) lue."))
+            key_file = None
+        sock = None
+        if proxy.uses_proxy(connection):
+            self.report(tr("Statut : connexion par le proxy {proxy}…").format(proxy=proxy.describe(connection)))
+            sock = proxy.open_socket(connection, connection.host, connection.port, connection.timeout)
+        if connection.use_agent:
+            self.report(tr("Statut : l’agent SSH (Pageant ou OpenSSH) sera aussi utilisé pour l’authentification."))
+        try:
+            self.ssh.connect(connection.host, port=connection.port, username=connection.user,
+                             # With a key file the secret is its passphrase: it must never be offered
+                             # to the server as a password if the key is refused.
+                             password=None if connection.key_file else (connection.password or None),
+                             key_filename=key_file, pkey=pkey,
+                             passphrase=(connection.password or None) if key_file else None,
+                             timeout=connection.timeout, auth_timeout=connection.timeout,
+                             banner_timeout=connection.timeout, channel_timeout=connection.timeout,
+                             look_for_keys=False, allow_agent=bool(connection.use_agent),
+                             transport_factory=ReportingTransport, sock=sock)
+        except BaseException:
+            if sock is not None:
+                sock.close()
+            raise
         self.ssh.get_transport().set_keepalive(30)
-        self.sftp = self.ssh.open_sftp()
-        self.sftp.get_channel().settimeout(connection.timeout)
-        self.report("Statut : sous-système SFTP ouvert ; lecture du dossier de départ…")
-        return self.sftp.normalize(".")
+        self.timeout = connection.timeout
 
     def upload(self, local, remote, progress, offset=0):
         total = Path(local).stat().st_size
@@ -266,6 +617,46 @@ class SFTPClient(BaseClient):
 
     def mkdir(self, path):
         self.sftp.mkdir(path)
+
+    def run_hash(self, command: str, algorithm: str, path: str) -> str | None:
+        import shlex
+        import paramiko
+        try:
+            channel = self.ssh.get_transport().open_session(timeout=self.timeout)
+        except (paramiko.SSHException, OSError):
+            return None
+        try:
+            channel.settimeout(max(self.timeout, 600))
+            channel.exec_command(f"{command} {shlex.quote(path)}")
+            # EOF on stdin: a forced internal-sftp exits instead of waiting.
+            channel.shutdown_write()
+            output = b""
+            while chunk := channel.recv(4096):
+                output += chunk
+                if len(output) > 65536:
+                    return None
+            if channel.recv_exit_status() != 0:
+                return None
+            return parse_digest(output.decode("utf-8", "replace").split("\n", 1)[0], algorithm)
+        except (paramiko.SSHException, OSError):
+            return None
+        finally:
+            channel.close()
+
+    def checksum(self, path):
+        if self.hash_command is False:
+            return None
+        candidates = [self.hash_command] if self.hash_command else self.HASH_COMMANDS
+        for algorithm, command in candidates:
+            digest = self.run_hash(command, algorithm, path)
+            if digest:
+                if not self.hash_command:
+                    self.report(tr("Statut : empreinte serveur disponible ({method}).").format(method=command.split()[0]))
+                self.hash_command = (algorithm, command)
+                return algorithm, digest
+        if not self.hash_command:
+            self.hash_command = False
+        return None
 
     def rename(self, source, target):
         self.sftp.rename(source, target)
@@ -300,5 +691,28 @@ class SFTPClient(BaseClient):
     def close(self) -> None:
         if hasattr(self, "sftp"):
             self.sftp.close()
+        if hasattr(self, "ssh"):
+            self.ssh.close()
+
+
+class ShellClient(SFTPClient):
+    """SSH terminal profile: authentication and an interactive shell, no SFTP subsystem."""
+
+    def connect(self, connection: Connection) -> str:
+        self.open_ssh(connection)
+        self.report(tr("Statut : authentification SSH réussie."))
+        return connection.remote_directory or "~"
+
+    def open_shell(self, columns: int, lines: int):
+        """Interactive login shell on a pseudo-terminal (xterm, UTF-8)."""
+        channel = self.ssh.get_transport().open_session(timeout=self.timeout)
+        channel.get_pty(term="xterm-256color", width=columns, height=lines)
+        channel.invoke_shell()
+        return channel
+
+    def listdir(self, path: str) -> list[Entry]:
+        raise NotImplementedError(tr("Un profil SSH ouvre un terminal, pas l’explorateur de fichiers."))
+
+    def close(self) -> None:
         if hasattr(self, "ssh"):
             self.ssh.close()

@@ -48,6 +48,10 @@ def test_ftps_requires_valid_certificate(monkeypatch):
             contexts.append(context)
         def connect(self, *args, **kwargs): pass
         def login(self, *args): pass
+        def set_pasv(self, value): self.passive = value
+        def sendcmd(self, command):
+            import ftplib
+            raise ftplib.error_perm("502 not implemented")
         def prot_p(self): self.protected = True
         def pwd(self): return "/"
     monkeypatch.setattr(module, "LoggedFTPS", FakeTLS)

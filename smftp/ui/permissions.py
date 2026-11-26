@@ -33,7 +33,7 @@ def parse_mode(text):
 
 
 class PermissionsDialog(QDialog):
-    def __init__(self, parent=None, mode=None, directory=False, name=""):
+    def __init__(self, parent=None, mode=None, directory=False, name="", recursive=False):
         super().__init__(parent)
         title = self.tr("Permissions du dossier") if directory else self.tr("Permissions du fichier")
         self.setWindowTitle(f"{title} — {name}" if name else title)
@@ -58,6 +58,11 @@ class PermissionsDialog(QDialog):
                 box.toggled.connect(self.update_octal)
         self.octal = QLineEdit()
         self.octal.setMaxLength(3)
+        from PySide6.QtCore import QRegularExpression
+        from PySide6.QtGui import QRegularExpressionValidator
+        # Only octal digits can be typed (e.g. 644, 755).
+        self.octal.setValidator(QRegularExpressionValidator(QRegularExpression("[0-7]{0,3}"), self.octal))
+        self.octal.setPlaceholderText("644")
         self.octal.setAccessibleName(self.tr("Permissions en octal"))
         grid.addWidget(QLabel(self.tr("Octal")), 4, 0)
         grid.addWidget(self.octal, 4, 1, 1, 3)
@@ -66,14 +71,48 @@ class PermissionsDialog(QDialog):
         self.notice.setWordWrap(True)
         self.notice.setVisible(mode is None)
         grid.addWidget(self.notice, 5, 0, 1, 4)
+        # Remote folder: the same change can be applied to everything it contains.
+        self.recursive_box = QCheckBox(self.tr("Appliquer aussi au contenu"))
+        self.recursive_box.setToolTip(self.tr("Sous-dossiers et fichiers reçoivent chacun leur mode ; "
+                                              "les liens symboliques ne sont pas suivis."))
+        self.folder_mode = self.mode_field("755", self.tr("Mode des sous-dossiers"))
+        self.file_mode = self.mode_field("644", self.tr("Mode des fichiers"))
+        self.folder_label = QLabel(self.tr("Sous-dossiers"))
+        self.file_label = QLabel(self.tr("Fichiers"))
+        grid.addWidget(self.recursive_box, 6, 0, 1, 4)
+        grid.addWidget(self.folder_label, 7, 0)
+        grid.addWidget(self.folder_mode, 7, 1, 1, 3)
+        grid.addWidget(self.file_label, 8, 0)
+        grid.addWidget(self.file_mode, 8, 1, 1, 3)
+        for widget in (self.recursive_box, self.folder_label, self.folder_mode, self.file_label, self.file_mode):
+            widget.setVisible(recursive)
+        for widget in (self.folder_mode, self.file_mode):
+            widget.setEnabled(False)
+        self.recursive_box.toggled.connect(self.folder_mode.setEnabled)
+        self.recursive_box.toggled.connect(self.file_mode.setEnabled)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept_valid)
         buttons.rejected.connect(self.reject)
-        grid.addWidget(buttons, 6, 0, 1, 4)
+        grid.addWidget(buttons, 9, 0, 1, 4)
         if mode is not None:
             text = f"{mode & 0o777:03o}"
             self.octal.setText(text)
             self.update_boxes(text)
+
+    def mode_field(self, value, name):
+        from PySide6.QtCore import QRegularExpression
+        from PySide6.QtGui import QRegularExpressionValidator
+        field = QLineEdit(value)
+        field.setMaxLength(3)
+        field.setValidator(QRegularExpressionValidator(QRegularExpression("[0-7]{0,3}"), field))
+        field.setAccessibleName(name)
+        return field
+
+    def recursive(self):
+        """(sub-folder mode, file mode) when the content is changed too, else None."""
+        if not self.recursive_box.isChecked():
+            return None
+        return int(self.folder_mode.text(), 8), int(self.file_mode.text(), 8)
 
     def update_octal(self):
         value = sum((1 << (8 - i)) for i, box in enumerate(self.boxes) if box.isChecked())
@@ -89,9 +128,16 @@ class PermissionsDialog(QDialog):
             box.blockSignals(False)
 
     def accept_valid(self):
-        value = self.octal.text()
-        if len(value) == 3 and all(c in "01234567" for c in value):
+        values = [self.octal.text()]
+        if self.recursive_box.isChecked():
+            values += [self.folder_mode.text(), self.file_mode.text()]
+        if all(len(value) == 3 and all(c in "01234567" for c in value) for value in values):
             self.accept()
+            return
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.warning(self, self.tr("Permissions"),
+                            self.tr("Indiquez trois chiffres de 0 à 7, par exemple 644 (fichier) ou 755 (dossier)."))
+        self.octal.setFocus()
 
     def mode(self):
         return self.special | int(self.octal.text(), 8)

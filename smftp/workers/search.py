@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import posixpath
 from PySide6.QtCore import QThread, Signal
-from smftp.core.clients import FTPClient, FTPSClient, SFTPClient
+from smftp.core.clients import make_client
 from smftp.models.entries import Entry
 from smftp.core.errors import describe_error
 from smftp.utils.storage import data_dir
@@ -33,8 +33,7 @@ class SearchWorker(QThread):
         client = None
         try:
             if self.connection:
-                p = self.connection.protocol
-                client = SFTPClient(str(data_dir() / "known_hosts")) if p == "SFTP" else (FTPSClient() if p == "FTPS" else FTPClient())
+                client = make_client(self.connection.protocol, str(data_dir() / "known_hosts"))
                 client.connect(self.connection)
                 stack = [self.root]
                 while stack and not self.isInterruptionRequested():
@@ -68,7 +67,7 @@ class SearchWorker(QThread):
                         except OSError:
                             continue
         except Exception as error:
-            self.failed.emit(describe_error(error, self.connection, "Recherche récursive"))
+            self.failed.emit(describe_error(error, self.connection, self.tr("Recherche récursive")))
         finally:
             if client:
                 client.close()

@@ -11,10 +11,11 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineE
 
 
 def size_label(size: int) -> str:
+    from smftp.i18n import tr
     value = float(size)
-    for unit in ("o", "Ko", "Mo", "Go"):
-        if value < 1024 or unit == "Go":
-            return f"{value:.0f} {unit}" if unit == "o" else f"{value:.1f} {unit}"
+    for index, unit in enumerate((tr("o"), tr("Ko"), tr("Mo"), tr("Go"))):
+        if value < 1024 or index == 3:
+            return f"{value:.0f} {unit}" if index == 0 else f"{value:.1f} {unit}"
         value /= 1024
 
 
@@ -51,7 +52,13 @@ def breadcrumb_parts(path: str, remote: bool) -> list[tuple[str, str]]:
 
 class EntryItem(QTreeWidgetItem):
     def __lt__(self, other):
-        column = self.treeWidget().sortColumn()
+        tree = self.treeWidget()
+        column = tree.sortColumn()
+        mine, theirs = bool(self.data(0, Qt.ItemDataRole.UserRole + 1)), bool(other.data(0, Qt.ItemDataRole.UserRole + 1))
+        if mine != theirs:
+            # Folders first whatever the order, as in the local panel and Windows Explorer.
+            ascending = tree.header().sortIndicatorOrder() == Qt.SortOrder.AscendingOrder
+            return mine if ascending else theirs
         return self.data(column, Qt.ItemDataRole.UserRole) < other.data(column, Qt.ItemDataRole.UserRole)
 
 
@@ -66,6 +73,22 @@ class LocalView(QTreeView):
 
 
 class LocalModel(QFileSystemModel):
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        # Same size units as the server panel ("2.0 Ko"), not Windows' own ("2,00 Kio").
+        if role == Qt.ItemDataRole.DisplayRole and index.column() == 1:
+            return "" if self.isDir(index) else size_label(self.size(index))
+        # Windows names types in its own language ("File Folder", "Text Document"): say it in French.
+        if role == Qt.ItemDataRole.DisplayRole and index.column() == 2:
+            if self.isDir(index):
+                return self.tr("Dossier")
+            suffix = Path(self.fileName(index)).suffix.lstrip(".")
+            return self.tr("Fichier %s") % suffix.upper() if suffix else self.tr("Fichier")
+        # Same date format as the server panel.
+        if role == Qt.ItemDataRole.DisplayRole and index.column() == 3:
+            modified = self.lastModified(index)
+            return modified.toPython().strftime(self.tr("%d/%m/%Y %H:%M")) if modified.isValid() else ""
+        return super().data(index, role)
+
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
         if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
             return [self.tr("Nom"), self.tr("Taille"), self.tr("Type"), self.tr("Modifié le")][section] if section < 4 else ""
@@ -99,6 +122,10 @@ class Explorer(QWidget):
     dropped = Signal(object, str, bool)
     context_requested = Signal(object)
     file_opened = Signal()
+    path_changed = Signal(str)  # The folder shown (also emitted again on refresh).
+
+    # Narrow panel: these columns are hidden in this order when the name would get less room.
+    NAME_ROOM = 140
 
     def __init__(self, remote: bool = False):
         super().__init__()
@@ -113,13 +140,15 @@ class Explorer(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 12)
         title = QHBoxLayout()
-        heading = QLabel(self.tr("SERVEUR DISTANT" if remote else "ESPACE LOCAL"))
+        heading = QLabel(self.tr("SERVEUR DISTANT") if remote else self.tr("ESPACE LOCAL"))
         heading.setObjectName("eyebrow")
         title.addWidget(heading)
         title.addStretch()
-        self.count = QLabel(self.tr("Non connecté" if remote else "Votre ordinateur"))
+        self.count = QLabel(self.tr("Non connecté") if remote else self.tr("Votre ordinateur"))
         self.count.setObjectName("muted")
+        self.count.setMinimumHeight(24)  # Same height as the server panel's "Déconnecter" button.
         title.addWidget(self.count)
+        self.title_row = title  # The window adds panel-specific actions here.
         layout.addLayout(title)
         nav = QHBoxLayout()
         self.navigation_buttons = []
@@ -141,6 +170,12 @@ class Explorer(QWidget):
         self.address.setPlaceholderText(self.tr("Chemin du dossier"))
         self.address.returnPressed.connect(lambda: self.navigate(self.address.text()))
         nav.addWidget(self.address)
+        if not remote:
+            from smftp.ui.icons import icon_button
+            self.browse_button = icon_button("folder", self.tr("Choisir un dossier dans l’Explorateur Windows…"),
+                                             self.choose_folder)
+            self.browse_button.setFixedSize(40, 40)  # Same size as the navigation arrows.
+            nav.addWidget(self.browse_button)
         layout.addLayout(nav)
         self.crumbs = QHBoxLayout()
         layout.addLayout(self.crumbs)
@@ -158,7 +193,7 @@ class Explorer(QWidget):
             self.model = LocalModel(self)
             self.model.setRootPath(self.path)
             self.model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
-            self.model.directoryLoaded.connect(lambda _: self.select_pending())
+            self.model.directoryLoaded.connect(lambda _: (self.select_pending(), self.fit_columns()))
             self.view = LocalView()
             self.view.setModel(self.model)
             self.view.setRootIndex(self.model.index(self.path))
@@ -175,7 +210,16 @@ class Explorer(QWidget):
         self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.view.customContextMenuRequested.connect(lambda point: self.context_requested.emit(self.view.viewport().mapToGlobal(point)))
         self.view.setUniformRowHeights(True)
-        self.view.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header = self.view.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        # The name takes the free room; the last column keeps its own width (also when another
+        # column is hidden in a narrow panel).
+        header.setStretchLastSection(False)
+        # The name keeps room in a narrow panel (assistant open). The other columns fit their
+        # content once, at the first listing, and stay resizable by hand afterwards.
+        header.setMinimumSectionSize(60)
+        self.columns_fitted = False
+        self.auto_hidden = {}  # column -> width it had before the panel became too narrow
         self.view.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self.stack = QStackedWidget()
         self.stack.addWidget(self.view)
@@ -210,8 +254,51 @@ class Explorer(QWidget):
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty.setVisible(remote)
         layout.addWidget(self.empty)
+        self.install_keyboard()
         if not remote:
             self.commit(self.path)
+
+    def install_keyboard(self) -> None:
+        """Explorer keys: Enter opens, Backspace / Alt+Up go up, Alt+Left / Alt+Right browse history."""
+        from PySide6.QtGui import QKeySequence, QShortcut
+        for view in (self.view, self.icons):
+            for key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                shortcut = QShortcut(QKeySequence(key), view)
+                shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+                shortcut.activated.connect(self.open_current)
+            # Backspace only in the file list: in the address and search fields it erases text.
+            back = QShortcut(QKeySequence(Qt.Key.Key_Backspace), view)
+            back.setContext(Qt.ShortcutContext.WidgetShortcut)
+            back.activated.connect(self.parent_folder)
+        for keys, callback in (((Qt.KeyboardModifier.AltModifier | Qt.Key.Key_Up), self.parent_folder),
+                               ((Qt.KeyboardModifier.AltModifier | Qt.Key.Key_Left), lambda: self.travel(-1)),
+                               ((Qt.KeyboardModifier.AltModifier | Qt.Key.Key_Right), lambda: self.travel(1))):
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(callback)
+
+    def open_current(self) -> None:
+        """Enter on the list: open the current folder or file, like a double-click."""
+        if self.remote and self.position < 0:
+            return
+        if self.stack.currentWidget() is self.icons:
+            if self.remote:
+                item = self.icons.currentItem()
+                if item is not None:
+                    self.open_icon(item)
+            else:
+                index = self.icons.currentIndex()
+                if index.isValid():
+                    self.open_local(index)
+            return
+        if self.remote:
+            item = self.view.currentItem()
+            if item is not None and not item.isHidden():
+                self.open_remote(item, 0)
+        else:
+            index = self.view.currentIndex()
+            if index.isValid():
+                self.open_local(index.siblingAtColumn(0))
 
     def reveal(self, folder: str, name: str) -> None:
         """Open a folder and select one of its entries (used by search results)."""
@@ -243,6 +330,13 @@ class Explorer(QWidget):
             self.view.scrollTo(index)
         self.pending_select = None
 
+    def choose_folder(self) -> None:
+        """Local panel only: pick a folder with the system dialog and open it."""
+        from PySide6.QtWidgets import QFileDialog
+        folder = QFileDialog.getExistingDirectory(self, self.tr("Choisir un dossier local"), self.path)
+        if folder:
+            self.navigate(folder)
+
     def navigate(self, path: str) -> None:
         if self.remote:
             self.requested.emit(posixpath.normpath(path))
@@ -262,15 +356,45 @@ class Explorer(QWidget):
         while self.crumbs.count():
             item = self.crumbs.takeAt(0)
             if item.widget():
+                # Hidden at once: deleteLater() alone left the old path painted over the list.
+                item.widget().hide()
                 item.widget().deleteLater()
         for label, target in breadcrumb_parts(path, self.remote):
             button = QPushButton(label)
             button.setObjectName("breadcrumb")
+            # Mouse shortcut only: Tab goes from the address to the list, not through every segment.
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             button.setToolTip(target)
             button.setAccessibleName(self.tr("Aller à %s") % target)
             button.clicked.connect(lambda checked=False, p=target: self.navigate(p))
             self.crumbs.addWidget(button)
         self.crumbs.addStretch()
+        self.fit_crumbs()
+        self.update_navigation()
+        self.path_changed.emit(path)
+
+    def fit_crumbs(self) -> None:
+        """Show the deepest folders that fit; the hidden ones stay reachable with the ↑ button."""
+        buttons = [self.crumbs.itemAt(i).widget() for i in range(self.crumbs.count())
+                   if self.crumbs.itemAt(i).widget() is not None]
+        available = max(0, self.width() - 40)
+        used = 0
+        for index, button in enumerate(reversed(buttons)):
+            width = button.sizeHint().width() + self.crumbs.spacing()
+            visible = index == 0 or used + width <= available
+            button.setVisible(visible)
+            if visible:
+                used += width
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "crumbs"):
+            self.fit_crumbs()
+
+    def reset_history(self) -> None:
+        """Forget the folders of a closed session: Back must not open another server's paths."""
+        self.history = []
+        self.position = -1
         self.update_navigation()
 
     def update_navigation(self) -> None:
@@ -284,12 +408,16 @@ class Explorer(QWidget):
         refresh.setEnabled(connected)
 
     def travel(self, offset: int) -> None:
+        if self.remote and self.position < 0:
+            return
         target = self.position + offset
         if 0 <= target < len(self.history):
             self.position = target
             self.navigate(self.history[target])
 
     def parent_folder(self) -> None:
+        if self.remote and self.position < 0:
+            return  # Not connected.
         self.navigate(posixpath.dirname(self.path) or "/" if self.remote else str(Path(self.path).parent))
 
     def refresh(self) -> None:
@@ -320,9 +448,13 @@ class Explorer(QWidget):
         self.view.setSortingEnabled(False)
         self.view.clear()
         self.icons.clear()
+        date_format = self.tr("%d/%m/%Y %H:%M")
         for entry in entries:
-            kind = "Dossier" if entry.is_dir else (Path(entry.name).suffix.lstrip(".").upper() or "Fichier")
-            date = datetime.fromtimestamp(entry.modified).strftime("%d/%m/%Y %H:%M") if entry.modified else "—"
+            suffix_label = Path(entry.name).suffix.lstrip(".").upper()
+            # Same wording as the local panel.
+            kind = (self.tr("Dossier") if entry.is_dir else
+                    (self.tr("Fichier %s") % suffix_label if suffix_label else self.tr("Fichier")))
+            date = datetime.fromtimestamp(entry.modified).strftime(date_format) if entry.modified else "—"
             item = EntryItem([entry.name, "—" if entry.is_dir else size_label(entry.size), kind, date, entry.permissions])
             values = [entry.name.casefold(), entry.size, kind, entry.modified, entry.permissions]
             for col, value in enumerate(values):
@@ -334,16 +466,67 @@ class Explorer(QWidget):
                 suffix = Path(entry.name).suffix.lower()
                 icon = (QStyle.StandardPixmap.SP_FileDialogContentsView if suffix in (".py", ".js", ".php", ".html", ".json", ".css")
                         else QStyle.StandardPixmap.SP_FileDialogInfoView if suffix in (".png", ".jpg", ".gif", ".webp")
-                        else QStyle.StandardPixmap.SP_DriveHDIcon if suffix in (".zip", ".gz", ".7z", ".tar") else icon)
+                        else icon)
                 item.setIcon(0, self.style().standardIcon(icon))
             self.view.addTopLevelItem(item)
             grid_item = QListWidgetItem(item.icon(0), entry.name)
             grid_item.setData(Qt.ItemDataRole.UserRole, entry.is_dir)
             self.icons.addItem(grid_item)
         self.view.setSortingEnabled(True)
-        self.count.setText(self.tr("%n élément(s)", "", len(entries)))
         self.filter_entries(self.search.text())
+        self.fit_columns()
         self.select_pending()
+
+    def fit_columns(self) -> None:
+        """Size, type, date and permissions fit their content once; the name takes the rest."""
+        if self.columns_fitted or not self.view.isVisible():
+            return
+        self.columns_fitted = True
+        for column in range(1, self.view.header().count()):
+            if not self.view.header().isSectionHidden(column):
+                self.view.resizeColumnToContents(column)
+        self.fit_narrow()
+
+    def narrow_order(self) -> list[int]:
+        """Columns hidden first when the panel is narrow: Permissions, then Type."""
+        return [4, 2] if self.remote else [2]
+
+    def fit_narrow(self) -> None:
+        """Hide Permissions then Type when the name would keep less than NAME_ROOM pixels;
+        show them again, with the width they had, once the room is back."""
+        header = self.view.header()
+        available = self.view.viewport().width()
+        if available <= 0 or header.count() < 3:
+            return
+
+        def others():
+            return sum(header.sectionSize(c) for c in range(1, header.count()) if not header.isSectionHidden(c))
+        for column in reversed(self.narrow_order()):
+            if column not in self.auto_hidden:
+                continue
+            if available - others() - self.auto_hidden[column] < self.NAME_ROOM:
+                break
+            width = self.auto_hidden.pop(column)
+            header.showSection(column)
+            header.resizeSection(column, width)
+        for column in self.narrow_order():
+            if available - others() >= self.NAME_ROOM:
+                break
+            if column < header.count() and not header.isSectionHidden(column):
+                self.auto_hidden[column] = header.sectionSize(column)
+                header.hideSection(column)
+
+    def header_state(self):
+        """Column layout to remember, with the columns hidden for lack of room shown."""
+        header = self.view.header()
+        hidden = dict(self.auto_hidden)
+        for column, width in hidden.items():
+            header.showSection(column)
+            header.resizeSection(column, width)
+        state = header.saveState()
+        for column in hidden:
+            header.hideSection(column)
+        return state
 
     def set_icon_mode(self, enabled):
         self.stack.setCurrentWidget(self.icons if enabled else self.view)
@@ -369,6 +552,14 @@ class Explorer(QWidget):
             for i in range(self.icons.count()):
                 item = self.icons.item(i)
                 item.setHidden(text.casefold() not in item.text().casefold() or (not self.hidden and item.text().startswith(".")))
+            # The counter matches what is shown: hidden files and filtered names are not counted.
+            shown = sum(not self.view.topLevelItem(i).isHidden() for i in range(self.view.topLevelItemCount()))
+            total = self.view.topLevelItemCount()
+            label = self.tr("%n élément(s)", "", shown)
+            if shown != total:
+                label += self.tr(" sur %1").replace("%1", str(total))
+            if self.position >= 0:
+                self.count.setText(label)
         else:
             self.model.setNameFilters([f"*{text}*"] if text else [])
             self.model.setNameFilterDisables(False)
@@ -387,6 +578,8 @@ class Explorer(QWidget):
         return [(self.model.filePath(i), self.model.isDir(i)) for i in self.view.selectionModel().selectedRows(0)]
 
     def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Resize and watched is self.view.viewport():
+            self.fit_narrow()
         if event.type() in (QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.Drop) and watched in (self.view.viewport(), self.icons.viewport()):
             mime = event.mimeData()
             if mime.hasUrls() or mime.hasFormat("application/x-smftp-remote"):

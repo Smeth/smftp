@@ -1,5 +1,5 @@
 """Independent transfer connections with cooperative pause and cancellation."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import os
 import posixpath
@@ -7,7 +7,7 @@ from threading import Event, Lock
 import time
 import hashlib
 from PySide6.QtCore import QThread, Signal
-from smftp.core.clients import FTPClient, FTPSClient, SFTPClient
+from smftp.core.clients import make_client
 from smftp.models.entries import Connection
 from smftp.utils.storage import data_dir
 
@@ -26,6 +26,9 @@ class Transfer:
     # destination that still matches is overwritten; any other one is asked.
     planned: bool = False
     expected: tuple | None = None
+    # Directory tasks: remote path -> [source size, source date, destination size,
+    # destination date or None] of each file already copied, so a resume skips it.
+    completed: dict = field(default_factory=dict)
 
 
 def valid_remote_name(name: str) -> bool:
@@ -61,6 +64,24 @@ class Cancelled(Exception):
     pass
 
 
+def dropped_connection(error: Exception) -> bool:
+    """A network error of a connection the server closed (not a local file problem)."""
+    import errno
+    import ftplib
+    if isinstance(error, (FileNotFoundError, PermissionError, IsADirectoryError, NotADirectoryError,
+                          FileExistsError)):
+        return False
+    if isinstance(error, OSError) and error.errno in (errno.ENOSPC, 112):
+        return False
+    if isinstance(error, (OSError, EOFError, ftplib.error_temp, ftplib.error_reply, ftplib.error_proto)):
+        return True
+    try:
+        import paramiko
+    except ImportError:
+        return False
+    return isinstance(error, paramiko.SSHException)
+
+
 class TransferWorker(QThread):
     activity = Signal(str)
     failed = Signal(object)
@@ -86,18 +107,37 @@ class TransferWorker(QThread):
         self.done_bytes = 0
         self.listings = {}
         self.remote_entries = {}
+        self.verify = True  # Compare a content fingerprint after each file.
+        self.mark_downloads = True  # Windows "Mark of the Web" on downloaded files (preference).
+        self.paused = False  # A pause happened on the current connection.
+        self.reconnected = False  # The one reconnection after a long pause was used.
+        self.answers = {}  # Conflict answers, kept when the copy restarts after a reconnection.
+        self.started_uploads = set()  # Direct (non-safe) uploads begun by this worker.
+        self.conflict_details = {}  # Sizes and dates shown with the conflict question.
+        self.known_remote = {}  # Folder uploads: remote path -> Entry or None, read once per folder.
+        self.made_dirs = set()
+        self.hash_warned = False
 
     def cancel(self):
         self.cancelled.set()
         self.running.set()
         self.answer.set()
+        # A server computing a checksum may not answer for minutes: cut the connection
+        # so that closing SMFTP or cancelling never waits for it.
+        client = self.client
+        if client is not None:
+            client.abort()
 
     def report_activity(self, message):
         from smftp.core.errors import redact
-        prefix = f"[Transfert {self.task.connection.protocol}] "
+        # ``message`` is already translated (here or by the protocol client).
+        prefix = self.tr("[Transfert {protocol}] ").format(protocol=self.task.connection.protocol)
         self.activity.emit(redact(prefix + message, (self.task.connection.password,)))
 
     def checkpoint(self):
+        if not self.running.is_set():
+            # The server may drop the idle connection during a long pause.
+            self.paused = True
         while not self.running.wait(0.1):
             if self.cancelled.is_set():
                 raise Cancelled
@@ -136,11 +176,14 @@ class TransferWorker(QThread):
     def conflict(self, name):
         if self.task.conflict != "ask":
             return self.task.conflict
+        if name in self.answers:
+            return self.answers[name]  # Already answered before a reconnection.
         self.answer.clear()
         self.conflict_found.emit(name)
         while not self.answer.wait(0.1):
             self.checkpoint()
         self.checkpoint()
+        self.answers[name] = self.choice
         return self.choice
 
     def measure(self, client, local: Path, remote: str) -> int:
@@ -148,8 +191,9 @@ class TransferWorker(QThread):
         self.checkpoint()
         total = 0
         if self.task.upload:
+            from smftp.workers.sync import is_junction
             for child in local.iterdir():
-                if child.is_symlink():
+                if child.is_symlink() or is_junction(child):
                     continue
                 if child.is_dir():
                     total += self.measure(client, child, posixpath.join(remote, child.name))
@@ -172,21 +216,34 @@ class TransferWorker(QThread):
     def copy(self, client, local: Path, remote: str, directory: bool):
         self.checkpoint()
         if local.is_symlink():
-            raise ValueError("Symbolic links are not followed")
+            raise ValueError(self.tr("Les liens symboliques ne sont pas suivis : choisissez directement le fichier ou le dossier cible."))
         if not self.task.upload and any(parent.is_symlink() for parent in local.parents):
-            raise ValueError("Destination symlink is not followed")
+            raise ValueError(self.tr("Le dossier de destination passe par un lien symbolique, qui n’est pas suivi par sécurité."))
         if directory:
             if self.total_bytes is None:
                 # Progress covers the whole task, not only the current file.
                 self.total_bytes = self.measure(client, local, remote)
                 self.done_bytes = 0
             if self.task.upload:
-                existing = client.exists(remote)
+                existing = self.remote_lookup(client, remote)
                 if existing and not existing.is_dir:
                     raise FileExistsError
                 if not existing:
                     client.mkdir(remote)
+                    listing = []
+                else:
+                    listing = client.listdir(remote)
+                self.made_dirs.add(remote)
+                for entry in listing:
+                    self.known_remote[posixpath.join(remote, entry.name)] = entry
+                for name in {child.name for child in local.iterdir()} - {entry.name for entry in listing}:
+                    self.known_remote[posixpath.join(remote, name)] = None
                 for child in local.iterdir():
+                    from smftp.workers.sync import is_junction
+                    if child.is_symlink() or is_junction(child):
+                        # Their target may lie outside the folder: skipped, not fatal.
+                        self.report_activity(self.tr("Statut : lien symbolique ou jonction ignoré : {path}").format(path=child))
+                        continue
                     self.copy(client, child, posixpath.join(remote, child.name), child.is_dir())
             else:
                 local.mkdir(parents=True, exist_ok=True)
@@ -204,6 +261,12 @@ class TransferWorker(QThread):
         if self.total_bytes is not None:
             self.done_bytes += size
 
+    def remote_lookup(self, client, remote):
+        """Entry of a remote path, from the folder listing already read when possible."""
+        if remote in self.known_remote:
+            return self.known_remote.pop(remote)
+        return client.exists(remote)
+
     def matches_plan(self, existing) -> bool:
         size, modified = self.task.expected
         if self.task.upload:
@@ -213,7 +276,9 @@ class TransferWorker(QThread):
     def copy_file(self, client, local: Path, remote: str) -> int:
         """Copy one file and return its source size, also counted when skipped."""
         if self.task.upload:
-            client.makedirs(posixpath.dirname(remote))
+            if posixpath.dirname(remote) not in self.made_dirs:
+                client.makedirs(posixpath.dirname(remote))
+                self.made_dirs.add(posixpath.dirname(remote))
             source = None
             source_size = local.stat().st_size
         else:
@@ -221,17 +286,32 @@ class TransferWorker(QThread):
             if source is None or source.is_dir:
                 raise FileNotFoundError(remote)
             source_size = source.size
-        existing = client.exists(remote) if self.task.upload else (local.stat() if local.exists() else None)
+        existing = self.remote_lookup(client, remote) if self.task.upload else (local.stat() if local.exists() else None)
+        if self.already_completed(local, remote, source, existing):
+            self.report_activity(self.tr("Statut : déjà copié lors d’une tentative précédente, ignoré : {name}").format(
+                name=local.name))
+            return source_size
         offset = 0
         resume = bool(self.task.resume)
         if existing:
-            if self.task.planned and self.task.expected is not None and self.matches_plan(existing):
+            if self.task.upload:
+                info = local.stat()
+                source_meta, target_meta = (info.st_size, info.st_mtime), (existing.size, existing.modified)
+            else:
+                source_meta, target_meta = (source.size, source.modified), (existing.st_size, existing.st_mtime)
+            self.conflict_details = dict(name=local.name, upload=self.task.upload, source=source_meta,
+                                         target=target_meta, destination=remote if self.task.upload else str(local))
+            if self.task.upload and remote in self.started_uploads:
+                choice = "resume"  # Our own partial upload, cut during a pause.
+            elif self.task.planned and self.task.expected is not None and self.matches_plan(existing):
                 choice = "overwrite"
             elif self.task.planned:
                 # Created or changed since the comparison: never overwrite silently.
                 choice = self.conflict(str(local.name)) if self.task.conflict == "ask" else self.task.conflict
             else:
-                choice = ("overwrite" if self.task.upload and self.task.safe_upload else "resume") if self.task.resume else self.conflict(str(local.name))
+                # A resumed or restored task only resumes its own hidden partial file.
+                # An existing destination is the user's data: the conflict rule applies.
+                choice = self.conflict(str(local.name))
             if choice == "skip":
                 return source_size
             if choice in ("newer", "different"):
@@ -242,8 +322,10 @@ class TransferWorker(QThread):
                     return source_size
                 if choice == "newer" and source_date <= target_date + 2:
                     return source_size
-            resume = choice == "resume"
-            if resume and self.task.upload and not self.task.safe_upload:
+            # The download partial is tied to the remote identity: an approved
+            # overwrite may still continue it.
+            resume = choice == "resume" or (choice == "overwrite" and bool(self.task.resume))
+            if choice == "resume" and self.task.upload and not self.task.safe_upload:
                 offset = existing.size
                 if offset > source_size:
                     raise ValueError("Destination exceeds source size")
@@ -272,15 +354,89 @@ class TransferWorker(QThread):
                 latest = local.stat()
                 uploaded = client.exists(temporary)
                 if (latest.st_size, latest.st_mtime_ns) != (info.st_size, info.st_mtime_ns):
-                    raise RuntimeError("Le fichier local a changé pendant l’envoi. Le fichier distant d’origine est conservé.")
+                    raise RuntimeError(self.tr("Le fichier local a changé pendant l’envoi. Le fichier distant d’origine est conservé."))
                 if uploaded is None or uploaded.size != info.st_size:
-                    raise RuntimeError("La taille du fichier temporaire distant ne correspond pas à la source. Publication annulée.")
-                client.replace(temporary, remote)
+                    raise RuntimeError(self.tr("La taille du fichier temporaire distant ne correspond pas à la source. Publication annulée."))
+                if not self.verify_content(client, local, temporary):
+                    try:
+                        client.unlink(temporary)
+                    except Exception:
+                        pass
+                    raise RuntimeError(self.tr("L’empreinte du fichier envoyé ne correspond pas à la source. "
+                                               "Le fichier distant d’origine est conservé ; le temporaire a été supprimé."))
+                try:
+                    client.replace(temporary, remote)
+                except Exception:
+                    try:
+                        client.unlink(temporary)
+                    except Exception:
+                        pass
+                    raise
             else:
+                self.started_uploads.add(remote)
                 client.upload(str(local), remote, self.progress, offset)
+                if not self.verify_content(client, local, remote):
+                    raise RuntimeError(self.tr("L’empreinte du fichier distant ne correspond pas à la source : renvoyez-le."))
         else:
             self.download(client, local, remote, source, resume)
+        self.record_completed(local, remote, source)
         return source_size
+
+    def verify_content(self, client, local: Path, remote: str, name: str = "") -> bool:
+        """True when fingerprints match or cannot be computed by the server."""
+        if not self.verify:
+            return True
+        self.checkpoint()
+        result = client.checksum(remote)
+        if result is None:
+            if not self.hash_warned:
+                self.hash_warned = True
+                self.report_activity(self.tr("Statut : le serveur ne calcule pas d’empreinte ; seule la taille est vérifiée."))
+            return True
+        from smftp.core.checksum import local_digest, LABELS
+        algorithm, digest = result
+        name = name or local.name
+        if local_digest(local, algorithm, self.checkpoint) != digest:
+            self.report_activity(self.tr("Erreur : empreinte {algorithm} différente pour {name}.").format(
+                algorithm=LABELS[algorithm], name=name))
+            return False
+        self.report_activity(self.tr("Statut : empreinte {algorithm} vérifiée : {name}").format(
+            algorithm=LABELS[algorithm], name=name))
+        return True
+
+    def source_signature(self, local: Path, source) -> list:
+        if self.task.upload:
+            info = local.stat()
+            return [info.st_size, info.st_mtime]
+        return [source.size, source.modified]
+
+    def record_completed(self, local: Path, remote: str, source) -> None:
+        if not self.task.directory:
+            return
+        try:
+            signature = self.source_signature(local, source)
+            if self.task.upload:
+                signature += [signature[0], None]
+            else:
+                info = local.stat()
+                signature += [info.st_size, info.st_mtime_ns]
+            self.task.completed[remote] = signature
+        except OSError:
+            pass
+
+    def already_completed(self, local: Path, remote: str, source, existing) -> bool:
+        """A resumed directory skips files finished earlier that are still unchanged on both sides."""
+        record = self.task.completed.get(remote) if self.task.resume and self.task.directory else None
+        if not record or existing is None:
+            return False
+        try:
+            if self.source_signature(local, source) != record[:2]:
+                return False
+        except OSError:
+            return False
+        if self.task.upload:
+            return not existing.is_dir and existing.size == record[2] and (record[3] is None or existing.modified == record[3])
+        return local.is_file() and existing.st_size == record[2] and existing.st_mtime_ns == record[3]
 
     def download(self, client, local: Path, remote: str, source, resume: bool):
         """Download into a hidden partial file tied to the remote size and date.
@@ -301,29 +457,77 @@ class TransferWorker(QThread):
         self.initial_offset = offset
         client.download(remote, str(temporary), self.progress, offset)
         self.checkpoint()
-        if temporary.stat().st_size != source.size:
+        received = temporary.stat().st_size
+        if received < source.size and self.paused and not self.reconnected:
+            # The server closed the data connection during a pause: keep the partial file.
+            raise ConnectionAbortedError(self.tr("Téléchargement interrompu par le serveur pendant la pause."))
+        if received != source.size:
             temporary.unlink(missing_ok=True)
-            raise RuntimeError("La taille téléchargée ne correspond pas au fichier distant, qui a peut-être changé. Le fichier local d’origine est conservé.")
+            raise RuntimeError(self.tr("La taille téléchargée ne correspond pas au fichier distant, qui a peut-être changé. Le fichier local d’origine est conservé."))
+        if not self.verify_content(client, temporary, remote, local.name):
+            temporary.unlink(missing_ok=True)
+            raise RuntimeError(self.tr("L’empreinte du fichier téléchargé ne correspond pas au fichier distant. "
+                                       "Le fichier local d’origine est conservé ; relancez le téléchargement."))
         os.replace(temporary, local)
+        if self.mark_downloads:
+            from smftp.utils.paths import mark_from_internet
+            # SmartScreen and Office Protected View then treat it as a download.
+            mark_from_internet(local)
+
+    client = None
+
+    def open_client(self):
+        client = make_client(self.task.connection.protocol, str(data_dir() / "known_hosts"), self.report_activity)
+        self.client = client
+        client.connect(self.task.connection)
+        self.paused = False
+        return client
 
     def run(self):
         client = None
+        self.reconnected, self.answers, self.started_uploads = False, {}, set()
         try:
             self.checkpoint()
-            protocol = self.task.connection.protocol
-            client = SFTPClient(str(data_dir() / "known_hosts"), self.report_activity) if protocol == "SFTP" else (FTPSClient(self.report_activity) if protocol == "FTPS" else FTPClient(self.report_activity))
-            client.connect(self.task.connection)
-            self.copy(client, Path(self.task.local), self.task.remote, self.task.directory)
-            self.report_activity("Statut : transfert terminé.")
+            client = self.open_client()
+            while True:
+                try:
+                    self.copy(client, Path(self.task.local), self.task.remote, self.task.directory)
+                    break
+                except Cancelled:
+                    raise
+                except Exception as error:
+                    if self.cancelled.is_set() or self.reconnected or not self.paused or not dropped_connection(error):
+                        raise
+                # Long pause: the server has closed the connection. Reconnect once and
+                # continue from the partial file already written.
+                self.reconnected = True
+                self.report_activity(self.tr("Statut : connexion fermée par le serveur pendant la pause ; "
+                                             "reconnexion et reprise du fichier partiel…"))
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                self.checkpoint()
+                client = self.open_client()
+                self.task.resume = True
+                self.done_bytes = 0  # Files finished before are counted again when skipped.
+            self.report_activity(self.tr("Statut : transfert terminé."))
             self.result.emit("Terminé")
         except Cancelled:
-            self.report_activity("Statut : transfert annulé.")
+            self.report_activity(self.tr("Statut : transfert annulé."))
             self.result.emit("Annulé")
         except Exception as error:
+            if self.cancelled.is_set():
+                # The connection was cut on purpose by cancel().
+                self.report_activity(self.tr("Statut : transfert annulé."))
+                self.result.emit("Annulé")
+                return
             from smftp.core.errors import describe_error
-            self.failed.emit(describe_error(error, self.task.connection, "Téléversement" if self.task.upload else "Téléchargement"))
+            operation = self.tr("Téléversement") if self.task.upload else self.tr("Téléchargement")
+            self.failed.emit(describe_error(error, self.task.connection, operation))
             self.result.emit("Échoué")
         finally:
+            self.client = None
             if client:
                 try:
                     client.close()

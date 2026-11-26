@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QApplication, QMessageBox, QFileDialog
+from PySide6.QtWidgets import QApplication, QMessageBox, QFileDialog, QLineEdit
 from PySide6.QtCore import QEventLoop, QTimer
 from smftp.models.entries import Connection
 from smftp.ui.connection_dialog import ConnectionDialog
@@ -15,6 +15,13 @@ def test_connection_dialog_loads_vault_and_saves_without_connecting(monkeypatch)
     assert dialog.name.text() == "Production"
     assert dialog.password.text() == "remembered-secret"
     assert dialog.remember.isChecked()
+    assert dialog.password.echoMode() == QLineEdit.EchoMode.Password
+    assert dialog.show_password in dialog.password.actions()  # The eye sits inside the field.
+    dialog.show_password.trigger()
+    assert dialog.password.echoMode() == QLineEdit.EchoMode.Normal
+    assert dialog.show_password.text() == "Masquer le mot de passe"
+    dialog.show_password.trigger()
+    assert dialog.password.echoMode() == QLineEdit.EchoMode.Password
     assert dialog.save_button.isEnabled()
     dialog.accept_save_only()
     assert dialog.save_only
@@ -25,7 +32,7 @@ def test_offline_profile_save_update_and_detailed_error(monkeypatch):
     app = QApplication.instance() or QApplication([])
     import smftp.ui.main_window as module
     written, vault_calls, boxes = [], [], []
-    monkeypatch.setattr(module, "load_sites", lambda: [])
+    monkeypatch.setattr(module, "load_sites", lambda *args: [])
     monkeypatch.setattr(module, "save_sites", lambda profiles: written.append(profiles))
     monkeypatch.setattr(module, "store_credential", lambda connection: vault_calls.append(connection))
     monkeypatch.setattr(QMessageBox, "exec", lambda box: boxes.append((box.text(), box.detailedText())))
@@ -84,7 +91,7 @@ def test_xml_header_repair_confirmation(tmp_path, monkeypatch, approve):
     original = b'<?xml version="1.0" standalone="true"?><FileZilla3><Servers><Server><Host>test.local</Host><User>alice</User></Server></Servers></FileZilla3>'
     path.write_bytes(original)
     written, questions, errors = [], [], []
-    monkeypatch.setattr(module, "load_sites", lambda: [])
+    monkeypatch.setattr(module, "load_sites", lambda *args: [])
     monkeypatch.setattr(module, "save_sites", lambda sites: written.append(sites))
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *args: (str(path), ""))
     def answer(*args):
