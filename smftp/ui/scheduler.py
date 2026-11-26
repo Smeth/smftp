@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, Q
                                QSplitter, QAbstractItemView, QHeaderView)
 from smftp.core import schedule as S
 from smftp.i18n import tr
-from smftp.ui.icons import icon_button, recolor, theme_of
+from smftp.ui.icons import icon_button, recolor, theme_of, resize_within_screen
 from smftp.utils.storage import data_dir
 from PySide6.QtGui import QBrush, QColor
 
@@ -328,6 +328,8 @@ class TaskEditor(QDialog):
         self.setMinimumWidth(560)
         data = dict(defaults or {}, **(task or {}))
         form = QFormLayout(self)
+        # Never smaller than its content: wrapped notes overlapped the rows above.
+        form.setSizeConstraint(QFormLayout.SizeConstraint.SetMinimumSize)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         legend = QLabel(self.tr("Les champs marqués d’un * sont obligatoires."))
         legend.setObjectName("muted")
@@ -426,11 +428,9 @@ class TaskEditor(QDialog):
                                         ("", self.catch_up, False), ("", self.enabled, False)]:
             form.addRow(self.tr(label) + (" *" if required else ""), widget)
             self.rows[widget] = form.labelForField(widget)
-        note = QLabel(self.tr("Les tâches s’exécutent tant que SMFTP est ouvert, fenêtre réduite comprise. Pour "
-                              "fermer la fenêtre sans les arrêter, cochez dans les Préférences « Garder SMFTP dans la "
-                              "zone de notification » ; SMFTP peut aussi démarrer avec Windows. "
-                              "Elles copient uniquement : rien n’est jamais supprimé. Le mot de passe du profil "
-                              "doit être mémorisé dans le coffre-fort."))
+        note = QLabel(self.tr("Les tâches s’exécutent tant que SMFTP est ouvert (voir Préférences pour le garder "
+                              "dans la zone de notification). Elles copient uniquement, sans rien supprimer ; le mot "
+                              "de passe du profil doit être mémorisé."))
         note.setObjectName("muted")
         note.setWordWrap(True)
         form.addRow(note)
@@ -556,7 +556,7 @@ class ScheduleDialog(QDialog):
         self.scheduler = scheduler
         self.defaults = defaults or {}
         self.setWindowTitle(self.tr("Tâches planifiées"))
-        self.resize(940, 560)
+        resize_within_screen(self, 940, 560)
         layout = QVBoxLayout(self)
         bar = QHBoxLayout()
         bar.setSpacing(2)

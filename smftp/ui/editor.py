@@ -6,6 +6,7 @@ from PySide6.QtGui import (QSyntaxHighlighter, QTextCharFormat, QColor, QFont, Q
 from PySide6.QtWidgets import (QApplication, QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QPlainTextEdit,
                                QPushButton, QLabel, QMessageBox, QScrollArea, QWidget, QLineEdit,
                                QCheckBox, QInputDialog)
+from smftp.ui.icons import resize_within_screen
 
 
 # Keyword, number, string, comment, tag: each readable on its theme's background (4.5:1 at least).
@@ -80,8 +81,11 @@ class CodeEdit(QPlainTextEdit):
 
     def paint_gutter(self, event):
         painter = QPainter(self.gutter)
-        painter.fillRect(event.rect(), self.palette().alternateBase())
-        painter.setPen(self.palette().placeholderText().color())
+        from smftp.ui.icons import theme_of
+        dark = theme_of(self)
+        # The palette's alternate base is white whatever the theme: use the theme's colors.
+        painter.fillRect(event.rect(), QColor("#0e131b" if dark else "#eef2f8"))
+        painter.setPen(QColor("#5d6a80" if dark else "#7a8699"))
         block = self.firstVisibleBlock()
         top = round(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
         height = self.fontMetrics().height()
@@ -139,7 +143,7 @@ class Editor(QDialog):
         self.path = Path(path)
         self.base_title = title
         self.setWindowTitle(title)
-        self.resize(900, 640)
+        resize_within_screen(self, 900, 640)
         self.dirty = False
         raw = self.path.read_bytes()
         self.encoding = detect_encoding(raw)
@@ -345,7 +349,7 @@ class ImagePreview(QDialog):
     def __init__(self, path, parent=None):
         super().__init__(parent)
         self.setWindowTitle(Path(path).name)
-        self.resize(800, 600)
+        resize_within_screen(self, 800, 600)
         self.pixmap = QPixmap(path)
         self.fit = True
         self.zoom = 1.0

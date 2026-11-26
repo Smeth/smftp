@@ -24,7 +24,7 @@ TOOL_LABELS = {
     "read_journal": "lit le journal",
 }
 SUGGESTIONS = ["Synchronise mon site chaque soir à 23 h", "Pourquoi mes derniers transferts ont échoué ?",
-               "Quelles tâches sont prévues cette semaine ?", "Télécharge les rapports du serveur chaque lundi à 8 h"]
+               "Quelles tâches sont prévues cette semaine ?", "Télécharge les rapports chaque lundi à 8 h"]
 LIST_LIMIT = 200
 
 
@@ -393,6 +393,7 @@ class AssistantSettings(QDialog):
         self.setWindowTitle(self.tr("Réglages de l’assistant"))
         self.setMinimumWidth(520)
         layout = QVBoxLayout(self)
+        layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)  # Notes never cut.
         layout.setSpacing(10)
         title = QLabel(self.tr("Quel modèle fait tourner l’assistant ?"))
         title.setObjectName("dialogTitle")
@@ -419,8 +420,8 @@ class AssistantSettings(QDialog):
             self.effort.addItem(self.tr(label), value)
         self.effort.setCurrentIndex(max(0, self.effort.findData(config["effort"])))
         form.addRow(self.tr("Réflexion"), self.effort)
-        self.fast = QCheckBox(self.tr("Mode rapide : réponses jusqu’à 2,5 fois plus vite, facturées 2 fois plus cher "
-                                      "(Opus 5.5 uniquement)"))
+        self.fast = QCheckBox(self.tr("Mode rapide (Opus 5.5 uniquement)"))
+        self.fast.setToolTip(self.tr("Réponses jusqu’à 2,5 fois plus vite, facturées 2 fois plus cher."))
         self.fast.setChecked(config["fast"])
         form.addRow("", self.fast)
         self.claude_model.currentIndexChanged.connect(

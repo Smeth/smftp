@@ -1,13 +1,18 @@
 """Collect SMFTP's translatable French texts and update the English catalog.
 
 Usage:
-  python tools/i18n_extract.py            update resources/translations/smftp_en.json
-  python tools/i18n_extract.py --check    exit 1 if a text has no English translation
+  python tools/i18n_extract.py                 update resources/translations/smftp_en.json
+  python tools/i18n_extract.py --check         exit 1 if a text has no English translation
+  python tools/i18n_extract.py --add FILE.json  also add the texts listed in FILE.json (texts
+                                               the application asked for at run time, see
+                                               CatalogTranslator.missing)
 
 Collected: every string literal passed to tr() / self.tr() / translate(), and
 the literals of lists or dicts that are translated later through a variable
 (menu titles…), recognised as French text. Existing translations are kept; new
-texts get an empty value to fill in; texts no longer in the code are dropped.
+texts get an empty value to fill in. A translated text stays in the catalog as long as
+the same string literal exists somewhere in the code (texts found at run time); it is
+dropped once no literal of the code matches it.
 """
 import ast
 import json
@@ -64,6 +69,18 @@ def container_literals(tree):
     return found
 
 
+def all_literals():
+    """Every string literal of the code: a catalog key matching one is still in use."""
+    found = set()
+    for path in SOURCES:
+        if "__pycache__" in path.parts:
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                found.add(node.value)
+    return found
+
+
 def collect():
     texts = {}
     for path in SOURCES:
@@ -84,11 +101,16 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8")  # French and arrows on a Windows console.
     texts = collect()
     catalog = json.loads(CATALOG.read_text(encoding="utf-8")) if CATALOG.exists() else {}
-    updated = {text: catalog.get(text, "") for text in sorted(texts, key=str.casefold)}
+    literals = all_literals()
+    keys = set(texts) | {key for key in catalog if key in literals}
+    if "--add" in sys.argv:
+        added = json.loads(Path(sys.argv[sys.argv.index("--add") + 1]).read_text(encoding="utf-8"))
+        keys |= {text for text in added if isinstance(text, str) and text in literals}
+    updated = {text: catalog.get(text, "") for text in sorted(keys, key=str.casefold)}
     missing = [text for text, value in updated.items() if not value]
     if "--check" in sys.argv:
         for text in missing:
-            print(f"Sans traduction ({texts[text]}) : {text!r}")
+            print(f"Sans traduction ({texts.get(text, 'exécution')}) : {text!r}")
         sys.exit(1 if missing else 0)
     CATALOG.parent.mkdir(parents=True, exist_ok=True)
     CATALOG.write_text(json.dumps(updated, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")

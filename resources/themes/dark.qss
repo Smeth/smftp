@@ -114,3 +114,12 @@ QProgressBar::chunk { background: #5788f3; border-radius: 3px; }
 QComboBox QAbstractItemView { background: #1c2330; color: #dce4ef; selection-background-color: #263e63; selection-color: #e5efff; }
 
 QLabel#hint { color: #8794a9; }
+/* Review fixes: server list without focus frame, visible check marks and radio buttons. */
+QListWidget#sites { outline: none; }
+QListWidget#sites::item:focus { border: none; }
+QCheckBox::indicator:checked { image: url(@THEMES@/check-dark.svg); }
+QRadioButton::indicator { width: 14px; height: 14px; border: 1px solid #6681a6; border-radius: 8px; background: #10151e; }
+QRadioButton::indicator:checked { background: #5788f3; border: 1px solid #5788f3; }
+QMenu::indicator { width: 14px; height: 14px; }
+QMenu::indicator:checked { image: url(@THEMES@/check-dark.svg); background: #5788f3; border-radius: 3px; }
+QMenu::indicator:unchecked { border: 1px solid #6681a6; border-radius: 3px; }

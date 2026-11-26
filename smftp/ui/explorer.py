@@ -74,6 +74,9 @@ class LocalView(QTreeView):
 
 class LocalModel(QFileSystemModel):
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        # Same size units as the server panel ("2.0 Ko"), not Windows' own ("2,00 Kio").
+        if role == Qt.ItemDataRole.DisplayRole and index.column() == 1:
+            return "" if self.isDir(index) else size_label(self.size(index))
         # Windows names types in its own language ("File Folder", "Text Document"): say it in French.
         if role == Qt.ItemDataRole.DisplayRole and index.column() == 2:
             if self.isDir(index):
@@ -182,7 +185,7 @@ class Explorer(QWidget):
             self.model = LocalModel(self)
             self.model.setRootPath(self.path)
             self.model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
-            self.model.directoryLoaded.connect(lambda _: self.select_pending())
+            self.model.directoryLoaded.connect(lambda _: (self.select_pending(), self.fit_columns()))
             self.view = LocalView()
             self.view.setModel(self.model)
             self.view.setRootIndex(self.model.index(self.path))
@@ -199,7 +202,12 @@ class Explorer(QWidget):
         self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.view.customContextMenuRequested.connect(lambda point: self.context_requested.emit(self.view.viewport().mapToGlobal(point)))
         self.view.setUniformRowHeights(True)
-        self.view.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header = self.view.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        # The name keeps room in a narrow panel (assistant open). The other columns fit their
+        # content once, at the first listing, and stay resizable by hand afterwards.
+        header.setMinimumSectionSize(60)
+        self.columns_fitted = False
         self.view.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self.stack = QStackedWidget()
         self.stack.addWidget(self.view)
@@ -336,6 +344,8 @@ class Explorer(QWidget):
         while self.crumbs.count():
             item = self.crumbs.takeAt(0)
             if item.widget():
+                # Hidden at once: deleteLater() alone left the old path painted over the list.
+                item.widget().hide()
                 item.widget().deleteLater()
         for label, target in breadcrumb_parts(path, self.remote):
             button = QPushButton(label)
@@ -347,7 +357,26 @@ class Explorer(QWidget):
             button.clicked.connect(lambda checked=False, p=target: self.navigate(p))
             self.crumbs.addWidget(button)
         self.crumbs.addStretch()
+        self.fit_crumbs()
         self.update_navigation()
+
+    def fit_crumbs(self) -> None:
+        """Show the deepest folders that fit; the hidden ones stay reachable with the ↑ button."""
+        buttons = [self.crumbs.itemAt(i).widget() for i in range(self.crumbs.count())
+                   if self.crumbs.itemAt(i).widget() is not None]
+        available = max(0, self.width() - 40)
+        used = 0
+        for index, button in enumerate(reversed(buttons)):
+            width = button.sizeHint().width() + self.crumbs.spacing()
+            visible = index == 0 or used + width <= available
+            button.setVisible(visible)
+            if visible:
+                used += width
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "crumbs"):
+            self.fit_crumbs()
 
     def reset_history(self) -> None:
         """Forget the folders of a closed session: Back must not open another server's paths."""
@@ -432,7 +461,16 @@ class Explorer(QWidget):
             self.icons.addItem(grid_item)
         self.view.setSortingEnabled(True)
         self.filter_entries(self.search.text())
+        self.fit_columns()
         self.select_pending()
+
+    def fit_columns(self) -> None:
+        """Size, type, date and permissions fit their content once; the name takes the rest."""
+        if self.columns_fitted or not self.view.isVisible():
+            return
+        self.columns_fitted = True
+        for column in range(1, self.view.header().count()):
+            self.view.resizeColumnToContents(column)
 
     def set_icon_mode(self, enabled):
         self.stack.setCurrentWidget(self.icons if enabled else self.view)

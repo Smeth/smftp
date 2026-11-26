@@ -17,6 +17,7 @@ from smftp.core.errors import ErrorInfo, describe_error, redact
 from smftp.utils.profiles import profile_for, merge_profiles, normalize_profile, store_credential, identity, read_profiles, XMLCorrectionRequired
 from smftp.ui.workspace_features import WorkspaceFeatures
 from smftp.models.entries import protocol_label, is_terminal, uses_ssh
+from smftp.ui.icons import resize_within_screen
 
 
 def system_prefers_dark() -> bool:
@@ -140,9 +141,10 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         panels.addWidget(self.remote)
         panels.setSizes([530, 530])
         main.addWidget(panels)
+        main.setStretchFactor(0, 3)
         tabs = QTabWidget()
         self.activity_tabs = tabs
-        tabs.setMinimumHeight(170)  # Toolbar, headers and a few rows stay visible.
+        tabs.setMinimumHeight(220)  # Toolbar, headers and a few rows stay visible.
         self.logs = QPlainTextEdit()
         self.logs.setReadOnly(True)
         self.logs.document().setMaximumBlockCount(1000)
@@ -679,6 +681,10 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
 
     def restore_layout(self):
         settings = self.settings
+        if settings.value("layout/main_splitter") is None:
+            # First launch: about 40 % of the height for the log and the transfer queue.
+            QTimer.singleShot(0, lambda: self.main_splitter.setSizes(
+                [int(self.main_splitter.height() * 0.6), int(self.main_splitter.height() * 0.4)]))
         geometry = settings.value("layout/geometry")
         if geometry is not None:
             self.restoreGeometry(geometry)
@@ -690,6 +696,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             state = settings.value(f"layout/{key}_columns")
             if state is not None:
                 panel.view.header().restoreState(state)
+                panel.columns_fitted = True  # The user's own widths win over the automatic fit.
         for action, key in ((self.local_hidden_action, "local_hidden"), (self.remote_hidden_action, "remote_hidden"),
                             (self.icon_view_action, "icon_view"), (self.vertical_action, "vertical_panels")):
             action.setChecked(settings.value(f"layout/{key}", False, type=bool))
@@ -741,14 +748,15 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                 if panel.remote:
                     entry = next((e for e in panel.last_entries if e.name == posixpath.basename(path)), None)
                     if entry:
-                        date = datetime.fromtimestamp(entry.modified).isoformat(" ", timespec="seconds") if entry.modified else self.tr("Inconnue")
+                        date = (datetime.fromtimestamp(entry.modified).strftime(self.tr("%d/%m/%Y %H:%M"))
+                                if entry.modified else self.tr("Inconnue"))
                         details.append(template.format(path=path, kind=kind, size=size_label(entry.size), date=date,
                                                        permissions=entry.permissions or self.tr("Inconnues")))
                 else:
                     try:
                         info = Path(path).lstat()
                         details.append(template.format(path=path, kind=kind, size=size_label(info.st_size),
-                                                       date=datetime.fromtimestamp(info.st_mtime),
+                                                       date=datetime.fromtimestamp(info.st_mtime).strftime(self.tr("%d/%m/%Y %H:%M")),
                                                        permissions=f"{info.st_mode & 0o777:o}"))
                     except OSError as error:
                         details.append(str(error))
@@ -779,8 +787,9 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                 listed += "\n" + self.tr("… et %1 autre(s)").replace("%1", str(len(names) - 10))
             where = (self.tr("sur le serveur %1").replace("%1", self.connection.host) if panel.remote and self.connection
                      else self.tr("sur ce PC"))
-            question = (self.tr("Supprimer définitivement ces %1 élément(s) %2, avec tout leur contenu ?")
-                        .replace("%1", str(len(names))).replace("%2", where)
+            sentence = (self.tr("Supprimer définitivement cet élément %2, avec tout son contenu ?") if len(names) == 1
+                        else self.tr("Supprimer définitivement ces %1 éléments %2, avec tout leur contenu ?"))
+            question = (sentence.replace("%1", str(len(names))).replace("%2", where)
                         + "\n\n" + listed + "\n\n" + self.tr("Cette action est irréversible."))
             if QMessageBox.question(self, self.tr("Suppression définitive"), question,
                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -1038,7 +1047,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
 
     def show_sync_plan(self, plan, connection, local, remote, upload):
         import posixpath
-        from PySide6.QtWidgets import QDialog, QTreeWidget, QTreeWidgetItem, QDialogButtonBox, QCheckBox
+        from PySide6.QtWidgets import QDialog, QTreeWidget, QTreeWidgetItem, QDialogButtonBox, QCheckBox, QHeaderView
         from PySide6.QtGui import QBrush, QColor
         from smftp.ui.explorer import size_label
         from smftp.workers.sync import DELETIONS, DELETE_DIR
@@ -1050,14 +1059,17 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         dialog = QDialog(self)
         dialog.setWindowTitle(self.tr("Aperçu de synchronisation — miroir") if mirror
                               else self.tr("Aperçu de synchronisation — aucune suppression"))
-        dialog.resize(760, 480)
+        resize_within_screen(dialog, 760, 480)
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel(self.tr("Sélectionnez les éléments à traiter. Les suppressions sont définitives ; "
                                         "un fichier modifié depuis la comparaison est conservé.") if mirror else
                                 self.tr("Sélectionnez les fichiers à copier. Rien n’est supprimé.")))
         table = QTreeWidget()
         table.setHeaderLabels([self.tr("Élément"), self.tr("Action"), self.tr("Taille")])
-        table.setColumnWidth(0, 450)
+        table.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        table.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        table.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        table.header().setStretchLastSection(False)
         warning = QBrush(QColor("#ff8a8a" if self.dark else "#c0392b"))
         for path, state, size, _ in plan:
             item = QTreeWidgetItem([path + ("/" if state == DELETE_DIR else ""), self.tr(state), "" if state == DELETE_DIR else size_label(size)])
@@ -1378,7 +1390,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         box.setTextFormat(Qt.TextFormat.PlainText)
         box.setText(summary)
         if details:
-            box.setInformativeText(self.tr("Ouvrez les détails pour voir la réponse du serveur et le contexte. Les secrets sont masqués."))
+            box.setInformativeText(self.tr("« Montrer les détails… » affiche le contexte complet. Les mots de passe y sont masqués."))
             box.setDetailedText(details)
         box.exec()
 
@@ -1413,6 +1425,11 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         path = Path(__file__).resolve().parents[2] / "resources" / "themes" / f"{name}.qss"
         # Image URLs in the style sheet point to this folder, wherever SMFTP is installed.
         self.setStyleSheet(path.read_text(encoding="utf-8").replace("@THEMES@", path.parent.as_posix()))
+        from PySide6.QtGui import QColor, QPalette
+        palette = QApplication.palette()
+        palette.setColor(QPalette.ColorRole.Link, QColor("#93b6ff" if self.dark else "#1f5fd1"))
+        palette.setColor(QPalette.ColorRole.LinkVisited, QColor("#b9a5ff" if self.dark else "#6b3fc9"))
+        QApplication.setPalette(palette)
         from smftp.ui.icons import recolor
         recolor(self, self.dark)
         if hasattr(self, "terminal"):

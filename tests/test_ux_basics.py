@@ -37,10 +37,10 @@ def test_layout_and_view_options_are_remembered():
         QApplication.processEvents()
         window.vertical_action.setChecked(True)
         window.remote_hidden_action.setChecked(True)
-        window.panel_splitter.setSizes([300, 700])
+        window.workspace_splitter.setSizes([260, 1000])
         window.local.view.header().resizeSection(1, 150)
         window.save_layout()
-        sizes = window.panel_splitter.sizes()
+        sizes = window.workspace_splitter.sizes()
     finally:
         close_window(window)
     window = new_window()
@@ -50,7 +50,7 @@ def test_layout_and_view_options_are_remembered():
         assert window.vertical_action.isChecked() and window.remote_hidden_action.isChecked()
         assert window.panel_splitter.orientation() == Qt.Orientation.Vertical
         assert window.remote.hidden
-        restored = window.panel_splitter.sizes()
+        restored = window.workspace_splitter.sizes()
         assert restored[0] < restored[1] and abs(restored[0] / sum(restored) - sizes[0] / sum(sizes)) < 0.05
         assert window.local.view.header().sectionSize(1) == 150
         assert not window.icon_view_action.isChecked()

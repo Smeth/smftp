@@ -116,3 +116,12 @@ QComboBox QAbstractItemView { background: #ffffff; color: #26354c; selection-bac
 /* Secondary text readable on white (WCAG AA, 4.5:1 at least). */
 QLabel#muted, QLabel#emptyState { color: #5d6a80; }
 QLabel#hint { color: #5d6a80; }
+/* Review fixes: server list without focus frame, visible check marks and radio buttons. */
+QListWidget#sites { outline: none; }
+QListWidget#sites::item:focus { border: none; }
+QCheckBox::indicator:checked { image: url(@THEMES@/check-light.svg); }
+QRadioButton::indicator { width: 14px; height: 14px; border: 1px solid #8a9bb5; border-radius: 8px; background: #ffffff; }
+QRadioButton::indicator:checked { background: #5788f3; border: 1px solid #5788f3; }
+QMenu::indicator { width: 14px; height: 14px; }
+QMenu::indicator:checked { image: url(@THEMES@/check-light.svg); background: #5788f3; border-radius: 3px; }
+QMenu::indicator:unchecked { border: 1px solid #8a9bb5; border-radius: 3px; }

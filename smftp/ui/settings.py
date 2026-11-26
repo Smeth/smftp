@@ -50,8 +50,9 @@ class SettingsDialog(QDialog):
         self.notifications = QCheckBox(self.tr("Notifications système de fin de transfert"))
         self.notifications.setChecked(settings.value("notifications", True, type=bool))
         layout.addRow(self.notifications)
-        self.tray = QCheckBox(self.tr("Garder SMFTP dans la zone de notification quand je ferme la fenêtre "
-                                      "(les tâches planifiées continuent)"))
+        self.tray = QCheckBox(self.tr("Garder SMFTP dans la zone de notification à la fermeture"))
+        self.tray.setToolTip(self.tr("Fermer la fenêtre ne quitte pas SMFTP : les tâches planifiées continuent. "
+                                     "Clic droit sur l’icône → Quitter pour le fermer."))
         self.tray.setChecked(settings.value("tray_on_close", False, type=bool))
         layout.addRow(self.tray)
         from smftp.utils import autostart

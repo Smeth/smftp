@@ -276,3 +276,16 @@ def theme_of(widget):
             return bool(widget.dark)
         widget = widget.parent()
     return True
+
+
+def resize_within_screen(widget, width, height):
+    """Preferred size, but never larger than the screen (1080p at 150 % leaves about 670 px)."""
+    from PySide6.QtGui import QGuiApplication
+    parent = widget.parentWidget()
+    screen = (parent.screen() if parent is not None else None) or QGuiApplication.primaryScreen()
+    if screen is None:
+        widget.resize(width, height)
+        return
+    available = screen.availableGeometry()
+    widget.resize(min(width, int(available.width() * 0.95)), min(height, int(available.height() * 0.9)))
+

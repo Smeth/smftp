@@ -201,6 +201,7 @@ class Transfers(QWidget):
         self.tables[0].addTopLevelItem(item)
         progress = QProgressBar()
         progress.setRange(0, 100)
+        progress.setMaximumHeight(16)  # Fits the row; taller bars spilled over the next one.
         self.tables[0].setItemWidget(item, 2, progress)
         worker = TransferWorker(task, self)
         worker.limiter = self.limiter
@@ -372,7 +373,9 @@ class Transfers(QWidget):
                 + "\n" + self.tr("Fichier existant (%1) : %2").replace("%1", target_place).replace("%2", describe(details["target"]))
                 + "\n\n" + (self.tr("Le fichier à copier est le plus récent.") if newer
                              else self.tr("Le fichier existant n’est pas plus ancien.")))
-            box.setDetailedText(details.get("destination", ""))
+            if details.get("destination"):
+                box.setInformativeText(box.informativeText() + "\n" + self.tr("Destination : {path}").format(
+                    path=details["destination"]))
         choices = {}
         for label, value, tip in [
                 ("Écraser", "overwrite", "Remplacer le fichier existant."),

@@ -68,7 +68,8 @@ def _make_translator(catalog: dict):
 
         def translate(self, context, source, disambiguation=None, n=-1):
             translated = catalog.get(source)
-            if translated is None and source:
+            # Qt's own texts (contexts "QMessageBox", "QDialogButtonBox"…) are English already.
+            if translated is None and source and not (context or "").startswith("Q"):
                 CatalogTranslator.missing.add(source)
             return translated
 

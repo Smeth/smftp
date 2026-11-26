@@ -65,7 +65,8 @@ def english():
 
 
 def french_left(translator):
-    return sorted(text for text in type(translator).missing if FRENCH.search(text))
+    """Texts the application asked to translate and the catalog does not have."""
+    return sorted(text for text in type(translator).missing if any(c.isalpha() for c in text))
 
 
 def test_main_window_menus_and_dialogs_are_in_english(english, monkeypatch):

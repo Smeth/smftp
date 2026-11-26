@@ -14,6 +14,7 @@ from smftp.core.errors import redact
 from smftp.ui.connection_dialog import ConnectionDialog
 from smftp.utils.profiles import normalize_profile, profile_for, identity
 from smftp.workers.transfer import Transfer
+from smftp.ui.icons import resize_within_screen
 
 
 HELP_HTML = """
@@ -465,7 +466,7 @@ class WorkspaceFeatures:
     def manage_sites(self):
         dialog = QDialog(self)
         dialog.setWindowTitle(self.tr("Gestionnaire de sites"))
-        dialog.resize(720, 460)
+        resize_within_screen(dialog, 720, 460)
         layout = QVBoxLayout(dialog)
         tree = QTreeWidget()
         tree.setHeaderLabels([self.tr("Nom"), self.tr("Hôte"), self.tr("Protocole")])
@@ -661,7 +662,7 @@ class WorkspaceFeatures:
             pattern = f"*{pattern}*"
         dialog = QDialog(self)
         dialog.setWindowTitle(self.tr("Recherche récursive"))
-        dialog.resize(850, 500)
+        resize_within_screen(dialog, 850, 500)
         layout = QVBoxLayout(dialog)
         label = QLabel(self.tr("Recherche en cours… Limite : 10 000 résultats."))
         layout.addWidget(label)
@@ -731,7 +732,7 @@ class WorkspaceFeatures:
         from PySide6.QtWidgets import QDialog, QTextBrowser, QVBoxLayout, QDialogButtonBox
         dialog = QDialog(self)
         dialog.setWindowTitle(self.tr("Documentation et raccourcis"))
-        dialog.resize(720, 620)
+        resize_within_screen(dialog, 720, 620)
         layout = QVBoxLayout(dialog)
         text = QTextBrowser()
         text.setOpenExternalLinks(True)
@@ -791,7 +792,7 @@ class WorkspaceFeatures:
         connection = (self.connection.protocol + " " + self.connection.host if self.online and self.connection
                       else self.tr("aucune"))
         text = (f"SMFTP {CURRENT_VERSION}\nPython {platform.python_version()}\nQt / PySide6 {__version__}\n"
-                f"Paramiko {paramiko.__version__} • keyring {getattr(keyring, '__version__', '?')}\n"
+                f"Paramiko {paramiko.__version__} • keyring {keyring_version()}\n"
                 f"{platform.system()} {platform.release()} ({platform.machine()})\n"
                 + self.tr("Coffre-fort : {backend}\nDonnées : {data}\nConnexion : {connection}\nFile : %n tâche(s)", "",
                           len(self.transfers.records)).format(backend=backend, data=data_dir(), connection=connection))
@@ -856,3 +857,10 @@ class WorkspaceFeatures:
             QMessageBox.information(self, self.tr("Mises à jour"), self.tr("Aucune nouvelle mise à jour disponible."))
         else:
             QMessageBox.warning(self, self.tr("Vérification impossible"), self.tr("Impossible de vérifier les mises à jour. Vérifiez votre connexion Internet puis réessayez.\n\n{detail}").format(detail=result.get("detail", "")))
+def keyring_version() -> str:
+    """keyring exposes no __version__: read it from the installed package."""
+    try:
+        from importlib.metadata import version
+        return version("keyring")
+    except Exception:
+        return "?"
