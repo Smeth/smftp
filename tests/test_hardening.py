@@ -196,3 +196,21 @@ def test_stale_temporary_folders_are_cleaned_but_not_user_folders(tmp_path):
     assert clean_stale_temporary([tmp_path]) == 2
     left = sorted(p.name for p in tmp_path.iterdir())
     assert left == ["smftp-new12345", "smftp-recent1", "smftp-sauvegarde"]
+
+
+def test_first_ssh_connection_without_known_hosts_file_asks_to_trust(tmp_path):
+    """A transfer or scheduled task can be the first SSH connection: no misleading "file not found"."""
+    import paramiko
+    from smftp.core.clients import SFTPClient, UnknownHostError
+    known_hosts = tmp_path / "jamais-cree" / "known_hosts"
+    seen = {}
+
+    def fake_connect(self, *args, **kwargs):
+        seen["loaded"] = True
+        raise UnknownHostError("h.test", "ssh-ed25519", "AAAA", "SHA256:x")
+    import pytest as _pytest
+    with _pytest.MonkeyPatch.context() as patch:
+        patch.setattr(paramiko.SSHClient, "connect", fake_connect)
+        with _pytest.raises(UnknownHostError):
+            SFTPClient(str(known_hosts)).open_ssh(Connection("h.test", "u", "SFTP", 22, "x"))
+    assert seen["loaded"] and known_hosts.exists()

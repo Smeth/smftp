@@ -537,6 +537,12 @@ class SFTPClient(BaseClient):
 
         self.ssh = paramiko.SSHClient()
         self.ssh.load_system_host_keys()
+        # A scheduled task or a transfer may be the first SSH connection ever made:
+        # a missing file only means that no server has been trusted yet.
+        known = Path(self.known_hosts)
+        if not known.exists():
+            known.parent.mkdir(parents=True, exist_ok=True)
+            known.touch()
         self.ssh.load_host_keys(self.known_hosts)
         self.ssh.set_missing_host_key_policy(ConfirmHost())
         self.report(tr("Statut : résolution de {host} et connexion SSH au port {port}…").format(

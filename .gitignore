@@ -20,3 +20,4 @@ known_hosts
 *.pem
 *.key
 resources/translations/*.qm
+.claude/worktrees/
