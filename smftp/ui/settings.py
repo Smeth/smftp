@@ -41,6 +41,22 @@ class SettingsDialog(QDialog):
         self.notifications = QCheckBox(self.tr("Notifications système de fin de transfert"))
         self.notifications.setChecked(settings.value("notifications", True, type=bool))
         layout.addRow(self.notifications)
+        self.tray = QCheckBox(self.tr("Garder SMFTP dans la zone de notification quand je ferme la fenêtre "
+                                      "(les tâches planifiées continuent)"))
+        self.tray.setChecked(settings.value("tray_on_close", False, type=bool))
+        layout.addRow(self.tray)
+        from smftp.utils import autostart
+        from smftp.workers.updates import distribution
+        self.autostart = QCheckBox(self.tr("Lancer SMFTP au démarrage de Windows, réduit dans la zone de notification"))
+        if autostart.supported():
+            self.autostart.setChecked(autostart.is_enabled())
+        else:
+            self.autostart.setEnabled(False)
+            self.autostart.setToolTip(
+                self.tr("Version Microsoft Store : activez SMFTP dans Paramètres Windows → Applications → Démarrage.")
+                if distribution() == "store" else
+                self.tr("Disponible dans la version installée de SMFTP."))
+        layout.addRow(self.autostart)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -71,4 +87,13 @@ class SettingsDialog(QDialog):
         settings.setValue("conflict", self.conflict.currentData())
         settings.setValue("auto_reconnect", self.reconnect.isChecked())
         settings.setValue("notifications", self.notifications.isChecked())
+        settings.setValue("tray_on_close", self.tray.isChecked())
+        from smftp.utils import autostart
+        if autostart.supported() and self.autostart.isChecked() != autostart.is_enabled():
+            try:
+                autostart.set_enabled(self.autostart.isChecked())
+            except OSError:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, self.tr("Démarrage avec Windows"),
+                                    self.tr("Windows a refusé ce réglage. Vérifiez les droits de votre compte."))
         settings.setValue("verify_checksum", self.verify.isChecked())

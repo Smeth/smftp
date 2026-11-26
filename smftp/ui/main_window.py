@@ -1409,7 +1409,28 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             self.terminal.set_dark(self.dark)
             self.update_site_states()
 
+    def quit_app(self):
+        """Really quit, even when closing the window only hides it in the notification area."""
+        self.quitting = True
+        self.close()
+        if not self.closing and self.isVisible():
+            self.quitting = False  # The user answered "No".
+
+    def keeps_running_in_tray(self):
+        return (self.settings.value("tray_on_close", False, type=bool) and getattr(self, "tray", None) is not None
+                and self.tray.isVisible())
+
     def closeEvent(self, event):
+        if not self.closing and not getattr(self, "quitting", False) and self.keeps_running_in_tray():
+            # Preference: closing the window keeps SMFTP and its scheduled tasks running.
+            event.ignore()
+            self.save_layout()
+            self.hide()
+            if not getattr(self, "tray_hint_shown", False):
+                self.tray_hint_shown = True
+                self.tray.showMessage("SMFTP", self.tr("SMFTP reste ouvert ici : les tâches planifiées continuent. "
+                                                       "Clic droit sur l’icône → Quitter pour le fermer."))
+            return
         if not self.closing:
             dirty = any(editor.dirty for editor in self.editors if hasattr(editor, "dirty"))
             unsent = any(record.get("unsent") for record in self.edit_records.values())
@@ -1426,7 +1447,9 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                 if self.transfers.active():
                     message += self.tr("\nLes transferts seront interrompus et la file sera conservée en pause pour le prochain lancement.")
                 if self.scheduler.enabled_count():
-                    message += self.tr("\nLes tâches planifiées ne s’exécuteront pas tant que SMFTP est fermé.")
+                    message += self.tr("\nLes tâches planifiées ne s’exécuteront pas tant que SMFTP est fermé. "
+                                       "Pour qu’elles continuent, cochez dans les Préférences « Garder SMFTP dans la "
+                                       "zone de notification ».")
                 if dirty or unsent:
                     message += self.tr("\nLes modifications non enregistrées ou non envoyées des copies temporaires seront perdues.")
                 if QMessageBox.question(self, self.tr("Confirmer la fermeture"), message,

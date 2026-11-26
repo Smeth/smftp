@@ -68,8 +68,22 @@ class WorkspaceFeatures:
         self.transfers.speed.setValue(self.settings.value("speed_limit", 0, type=int))
         self.transfers.speed.valueChanged.connect(self.update_speed_limit)
         self.recent_sites = self.settings.value("recent_sites", [], type=list)
-        self.tray = QSystemTrayIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon), self)
+        from PySide6.QtGui import QIcon
+        from PySide6.QtWidgets import QMenu
+        icon = QApplication.windowIcon()
+        if icon.isNull():
+            icon = QIcon(str(Path(__file__).resolve().parents[2] / "resources" / "sf-icon.png"))
+        self.tray = QSystemTrayIcon(icon, self)
         self.tray.setToolTip("SMFTP")
+        tray_menu = QMenu(self)
+        tray_menu.addAction(self.tr("Afficher SMFTP")).triggered.connect(self.reveal)
+        tray_menu.addAction(self.tr("Tâches planifiées…")).triggered.connect(lambda: (self.reveal(), self.show_schedule()))
+        tray_menu.addSeparator()
+        tray_menu.addAction(self.tr("Quitter SMFTP")).triggered.connect(self.quit_app)
+        self.tray.setContextMenu(tray_menu)
+        self.tray_menu = tray_menu
+        self.tray.activated.connect(lambda reason: self.reveal() if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick) else None)
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray.show()
         menu = self.menuBar().addMenu(self.tr("Fichier"))
@@ -84,7 +98,7 @@ class WorkspaceFeatures:
         self.recent_menu = menu.addMenu(self.tr("Connexions récentes"))
         self.update_recent_menu()
         menu.addSeparator()
-        self.add_command(menu, "Quitter", self.close, "Ctrl+Q")
+        self.add_command(menu, "Quitter", self.quit_app, "Ctrl+Q")
         edit = self.menuBar().addMenu(self.tr("Édition"))
         self.edit_menu = edit
         for title, callback, shortcut in [

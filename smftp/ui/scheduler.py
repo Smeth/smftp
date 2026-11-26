@@ -413,7 +413,9 @@ class TaskEditor(QDialog):
                                         ("", self.catch_up, False), ("", self.enabled, False)]:
             form.addRow(self.tr(label) + (" *" if required else ""), widget)
             self.rows[widget] = form.labelForField(widget)
-        note = QLabel(self.tr("Les tâches s’exécutent tant que SMFTP est ouvert (fenêtre réduite comprise). "
+        note = QLabel(self.tr("Les tâches s’exécutent tant que SMFTP est ouvert, fenêtre réduite comprise. Pour "
+                              "fermer la fenêtre sans les arrêter, cochez dans les Préférences « Garder SMFTP dans la "
+                              "zone de notification » ; SMFTP peut aussi démarrer avec Windows. "
                               "Elles copient uniquement : rien n’est jamais supprimé. Le mot de passe du profil "
                               "doit être mémorisé dans le coffre-fort."))
         note.setObjectName("muted")

@@ -55,7 +55,8 @@ def manifest(name: str, publisher: str, display: str, version: str) -> str:
 <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
          xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
          xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-         IgnorableNamespaces="uap rescap">
+         xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+         IgnorableNamespaces="uap rescap desktop">
   <Identity Name={quoteattr(name)} Publisher={quoteattr(publisher)} Version="{version}" ProcessorArchitecture="x64" />
   <Properties>
     <DisplayName>SMFTP</DisplayName>
@@ -74,6 +75,12 @@ def manifest(name: str, publisher: str, display: str, version: str) -> str:
                           Square150x150Logo="Assets\\Square150x150Logo.png" Square44x44Logo="Assets\\Square44x44Logo.png">
         <uap:DefaultTile Wide310x150Logo="Assets\\Wide310x150Logo.png" />
       </uap:VisualElements>
+      <Extensions>
+        <!-- Off by default: the user turns it on in Settings > Apps > Startup. -->
+        <desktop:Extension Category="windows.startupTask" Executable="SMFTP.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="SMFTPStartup" Enabled="false" DisplayName="SMFTP" />
+        </desktop:Extension>
+      </Extensions>
     </Application>
   </Applications>
   <Capabilities>

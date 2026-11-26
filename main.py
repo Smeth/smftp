@@ -35,7 +35,12 @@ def main() -> None:
     window = MainWindow()
     if not logging_available:
         window.log(window.tr("Le journal sur disque est indisponible. Vérifiez les droits du dossier utilisateur."))
-    window.show()
+    from PySide6.QtWidgets import QSystemTrayIcon
+    # Started with Windows: wait in the notification area, scheduled tasks running.
+    if "--minimized" in sys.argv and window.tray.isVisible() and QSystemTrayIcon.isSystemTrayAvailable():
+        window.tray.showMessage("SMFTP", window.tr("SMFTP est prêt dans la zone de notification."))
+    else:
+        window.show()
     from smftp.utils.storage import listen_for_other_instances
     window.instance_server = listen_for_other_instances(window)
     if window.site_problems:
