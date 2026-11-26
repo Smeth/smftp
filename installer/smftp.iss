@@ -43,6 +43,8 @@ CloseApplications=yes
 RestartApplications=no
 
 [Languages]
+; The installer speaks the Windows display language (English otherwise).
+Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "french"; MessagesFile: "compiler:Languages\French.isl"
 
 [Tasks]

@@ -4,6 +4,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from PySide6.QtCore import QStandardPaths
+from smftp.i18n import tr
 
 
 def data_dir() -> Path:
@@ -152,13 +153,13 @@ def load_sites(problems: list | None = None) -> list[dict]:
     backup = path.with_name(f"sites.illisible-{time.strftime('%Y%m%d-%H%M%S')}.json")
     try:
         shutil.copy2(path, backup)
-        kept = f" Une copie du fichier d’origine a été conservée sous {backup}."
+        kept = " " + tr("Une copie du fichier d’origine a été conservée sous {path}.").format(path=backup)
     except OSError:
         kept = ""
     if raw is None or not isinstance(raw, list):
-        problems.append("Le fichier des profils (sites.json) est illisible : aucun profil n’a pu être chargé." + kept)
+        problems.append(tr("Le fichier des profils (sites.json) est illisible : aucun profil n’a pu être chargé.") + kept)
     else:
-        problems.append(f"{dropped} profil(s) illisible(s) dans sites.json ont été ignorés." + kept)
+        problems.append(tr("{count} profil(s) illisible(s) dans sites.json ont été ignorés.").format(count=dropped) + kept)
     return merge_profiles([], clean)
 
 

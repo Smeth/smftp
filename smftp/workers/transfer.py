@@ -107,7 +107,8 @@ class TransferWorker(QThread):
 
     def report_activity(self, message):
         from smftp.core.errors import redact
-        prefix = f"[Transfert {self.task.connection.protocol}] "
+        # ``message`` is already translated (here or by the protocol client).
+        prefix = self.tr("[Transfert {protocol}] ").format(protocol=self.task.connection.protocol)
         self.activity.emit(redact(prefix + message, (self.task.connection.password,)))
 
     def checkpoint(self):
@@ -186,9 +187,9 @@ class TransferWorker(QThread):
     def copy(self, client, local: Path, remote: str, directory: bool):
         self.checkpoint()
         if local.is_symlink():
-            raise ValueError("Les liens symboliques ne sont pas suivis : choisissez directement le fichier ou le dossier cible.")
+            raise ValueError(self.tr("Les liens symboliques ne sont pas suivis : choisissez directement le fichier ou le dossier cible."))
         if not self.task.upload and any(parent.is_symlink() for parent in local.parents):
-            raise ValueError("Le dossier de destination passe par un lien symbolique, qui n’est pas suivi par sécurité.")
+            raise ValueError(self.tr("Le dossier de destination passe par un lien symbolique, qui n’est pas suivi par sécurité."))
         if directory:
             if self.total_bytes is None:
                 # Progress covers the whole task, not only the current file.
@@ -212,7 +213,7 @@ class TransferWorker(QThread):
                     from smftp.workers.sync import is_junction
                     if child.is_symlink() or is_junction(child):
                         # Their target may lie outside the folder: skipped, not fatal.
-                        self.report_activity(f"Statut : lien symbolique ou jonction ignoré : {child}")
+                        self.report_activity(self.tr("Statut : lien symbolique ou jonction ignoré : {path}").format(path=child))
                         continue
                     self.copy(client, child, posixpath.join(remote, child.name), child.is_dir())
             else:
@@ -258,7 +259,8 @@ class TransferWorker(QThread):
             source_size = source.size
         existing = self.remote_lookup(client, remote) if self.task.upload else (local.stat() if local.exists() else None)
         if self.already_completed(local, remote, source, existing):
-            self.report_activity(f"Statut : déjà copié lors d’une tentative précédente, ignoré : {local.name}")
+            self.report_activity(self.tr("Statut : déjà copié lors d’une tentative précédente, ignoré : {name}").format(
+                name=local.name))
             return source_size
         offset = 0
         resume = bool(self.task.resume)
@@ -321,16 +323,16 @@ class TransferWorker(QThread):
                 latest = local.stat()
                 uploaded = client.exists(temporary)
                 if (latest.st_size, latest.st_mtime_ns) != (info.st_size, info.st_mtime_ns):
-                    raise RuntimeError("Le fichier local a changé pendant l’envoi. Le fichier distant d’origine est conservé.")
+                    raise RuntimeError(self.tr("Le fichier local a changé pendant l’envoi. Le fichier distant d’origine est conservé."))
                 if uploaded is None or uploaded.size != info.st_size:
-                    raise RuntimeError("La taille du fichier temporaire distant ne correspond pas à la source. Publication annulée.")
+                    raise RuntimeError(self.tr("La taille du fichier temporaire distant ne correspond pas à la source. Publication annulée."))
                 if not self.verify_content(client, local, temporary):
                     try:
                         client.unlink(temporary)
                     except Exception:
                         pass
-                    raise RuntimeError("L’empreinte du fichier envoyé ne correspond pas à la source. "
-                                       "Le fichier distant d’origine est conservé ; le temporaire a été supprimé.")
+                    raise RuntimeError(self.tr("L’empreinte du fichier envoyé ne correspond pas à la source. "
+                                               "Le fichier distant d’origine est conservé ; le temporaire a été supprimé."))
                 try:
                     client.replace(temporary, remote)
                 except Exception:
@@ -342,7 +344,7 @@ class TransferWorker(QThread):
             else:
                 client.upload(str(local), remote, self.progress, offset)
                 if not self.verify_content(client, local, remote):
-                    raise RuntimeError("L’empreinte du fichier distant ne correspond pas à la source : renvoyez-le.")
+                    raise RuntimeError(self.tr("L’empreinte du fichier distant ne correspond pas à la source : renvoyez-le."))
         else:
             self.download(client, local, remote, source, resume)
         self.record_completed(local, remote, source)
@@ -357,15 +359,17 @@ class TransferWorker(QThread):
         if result is None:
             if not self.hash_warned:
                 self.hash_warned = True
-                self.report_activity("Statut : le serveur ne calcule pas d’empreinte ; seule la taille est vérifiée.")
+                self.report_activity(self.tr("Statut : le serveur ne calcule pas d’empreinte ; seule la taille est vérifiée."))
             return True
         from smftp.core.checksum import local_digest, LABELS
         algorithm, digest = result
         name = name or local.name
         if local_digest(local, algorithm, self.checkpoint) != digest:
-            self.report_activity(f"Erreur : empreinte {LABELS[algorithm]} différente pour {name}.")
+            self.report_activity(self.tr("Erreur : empreinte {algorithm} différente pour {name}.").format(
+                algorithm=LABELS[algorithm], name=name))
             return False
-        self.report_activity(f"Statut : empreinte {LABELS[algorithm]} vérifiée : {name}")
+        self.report_activity(self.tr("Statut : empreinte {algorithm} vérifiée : {name}").format(
+            algorithm=LABELS[algorithm], name=name))
         return True
 
     def source_signature(self, local: Path, source) -> list:
@@ -423,11 +427,11 @@ class TransferWorker(QThread):
         self.checkpoint()
         if temporary.stat().st_size != source.size:
             temporary.unlink(missing_ok=True)
-            raise RuntimeError("La taille téléchargée ne correspond pas au fichier distant, qui a peut-être changé. Le fichier local d’origine est conservé.")
+            raise RuntimeError(self.tr("La taille téléchargée ne correspond pas au fichier distant, qui a peut-être changé. Le fichier local d’origine est conservé."))
         if not self.verify_content(client, temporary, remote, local.name):
             temporary.unlink(missing_ok=True)
-            raise RuntimeError("L’empreinte du fichier téléchargé ne correspond pas au fichier distant. "
-                               "Le fichier local d’origine est conservé ; relancez le téléchargement.")
+            raise RuntimeError(self.tr("L’empreinte du fichier téléchargé ne correspond pas au fichier distant. "
+                                       "Le fichier local d’origine est conservé ; relancez le téléchargement."))
         os.replace(temporary, local)
 
     client = None
@@ -441,19 +445,20 @@ class TransferWorker(QThread):
             self.client = client
             client.connect(self.task.connection)
             self.copy(client, Path(self.task.local), self.task.remote, self.task.directory)
-            self.report_activity("Statut : transfert terminé.")
+            self.report_activity(self.tr("Statut : transfert terminé."))
             self.result.emit("Terminé")
         except Cancelled:
-            self.report_activity("Statut : transfert annulé.")
+            self.report_activity(self.tr("Statut : transfert annulé."))
             self.result.emit("Annulé")
         except Exception as error:
             if self.cancelled.is_set():
                 # The connection was cut on purpose by cancel().
-                self.report_activity("Statut : transfert annulé.")
+                self.report_activity(self.tr("Statut : transfert annulé."))
                 self.result.emit("Annulé")
                 return
             from smftp.core.errors import describe_error
-            self.failed.emit(describe_error(error, self.task.connection, "Téléversement" if self.task.upload else "Téléchargement"))
+            operation = self.tr("Téléversement") if self.task.upload else self.tr("Téléchargement")
+            self.failed.emit(describe_error(error, self.task.connection, operation))
             self.result.emit("Échoué")
         finally:
             self.client = None

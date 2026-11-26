@@ -38,7 +38,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.base_title = "SMFTP — Votre espace de transfert"
+        self.base_title = self.tr("SMFTP — Votre espace de transfert")
         self.setWindowTitle(self.base_title)
         self.setMinimumSize(940, 620)
         self.fit_to_screen()
@@ -189,7 +189,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.statusBar().showMessage(self.tr("●  Déconnecté    •    Prêt à explorer"))
         from smftp.workers.updates import CURRENT_VERSION
         self.statusBar().addPermanentWidget(QLabel(f"SMFTP  /  {CURRENT_VERSION}"))
-        self.speed_label = QLabel("0 o/s")
+        from smftp.ui.explorer import size_label
+        self.speed_label = QLabel(f"{size_label(0)}/s")
         self.statusBar().addPermanentWidget(self.speed_label)
         self.thread = QThread(self)
         self.session = Session()
@@ -326,7 +327,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
     def save_log(self):
         from datetime import datetime
         filename, _ = QFileDialog.getSaveFileName(self, self.tr("Enregistrer le journal"),
-                                                  f"smftp-journal-{datetime.now():%Y%m%d-%H%M%S}.txt", "Texte (*.txt)")
+                                                  f"smftp-journal-{datetime.now():%Y%m%d-%H%M%S}.txt", self.tr("Texte (*.txt)"))
         if filename:
             try:
                 Path(filename).write_text(self.logs.toPlainText() + "\n", encoding="utf-8")
@@ -387,7 +388,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             self.sites = updated
             self.refresh_sites()
         except (OSError, ValueError, TypeError) as error:
-            self.on_error(describe_error(error, connection, "Enregistrement du profil"))
+            self.on_error(describe_error(error, connection, self.tr("Enregistrement du profil")))
             return False
         try:
             store_credential(connection)
@@ -479,7 +480,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.disconnect_button.setToolTip("")
         self.disconnect_button.setEnabled(True)
         self.setWindowTitle(f"SMFTP — {self.connection.name or self.connection.host}")
-        self.statusBar().showMessage(f"●  Connecté    •    {self.connection.host}    •    {protocol_label(self.connection.protocol)}")
+        self.statusBar().showMessage(self.tr("●  Connecté    •    {host}    •    {protocol}").format(
+            host=self.connection.host, protocol=protocol_label(self.connection.protocol)))
         self.log(self.tr("Connexion établie. Lecture du dossier distant…"))
         self.record_recent_connection()
 
@@ -557,7 +559,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                 record.pop("save_again", None)
             if record and record.get("editor"):
                 record["editor"].message.setText(self.tr("Envoi interrompu. La copie locale est conservée ; relancez le transfert ou enregistrez à nouveau."))
-            self.log(self.tr("Transfert interrompu : %s. Vérifiez la connexion, l’espace disque et les permissions.") % status)
+            self.log(self.tr("Transfert interrompu : %s. Vérifiez la connexion, l’espace disque et les permissions.") % self.tr(status))
 
     CONTINUATIONS = ("pending_remote_copies", "drag_downloads", "edit_downloads", "edit_uploads")
 
@@ -733,16 +735,21 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             from smftp.ui.explorer import size_label
             from datetime import datetime
             details = []
+            template = self.tr("{path}\nType : {kind}\nTaille : {size}\nModifié : {date}\nPermissions : {permissions}")
             for path, directory in selected:
+                kind = self.tr("Dossier") if directory else self.tr("Fichier")
                 if panel.remote:
                     entry = next((e for e in panel.last_entries if e.name == posixpath.basename(path)), None)
                     if entry:
-                        date = datetime.fromtimestamp(entry.modified).isoformat(" ", timespec="seconds") if entry.modified else "Inconnue"
-                        details.append(f"{path}\nType : {'Dossier' if directory else 'Fichier'}\nTaille : {size_label(entry.size)}\nModifié : {date}\nPermissions : {entry.permissions or 'Inconnues'}")
+                        date = datetime.fromtimestamp(entry.modified).isoformat(" ", timespec="seconds") if entry.modified else self.tr("Inconnue")
+                        details.append(template.format(path=path, kind=kind, size=size_label(entry.size), date=date,
+                                                       permissions=entry.permissions or self.tr("Inconnues")))
                 else:
                     try:
                         info = Path(path).lstat()
-                        details.append(f"{path}\nType : {'Dossier' if directory else 'Fichier'}\nTaille : {size_label(info.st_size)}\nModifié : {datetime.fromtimestamp(info.st_mtime)}\nPermissions : {info.st_mode & 0o777:o}")
+                        details.append(template.format(path=path, kind=kind, size=size_label(info.st_size),
+                                                       date=datetime.fromtimestamp(info.st_mtime),
+                                                       permissions=f"{info.st_mode & 0o777:o}"))
                     except OSError as error:
                         details.append(str(error))
             QMessageBox.information(self, self.tr("Propriétés"), "\n\n".join(details))
@@ -753,7 +760,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             current = ""
             if operation == "rename":
                 current = posixpath.basename(selected[0][0].rstrip("/")) if panel.remote else Path(selected[0][0]).name
-            value, ok = self.ask_name(self.tr("Nouveau dossier" if operation == "mkdir" else "Renommer"), current)
+            value, ok = self.ask_name(self.tr("Nouveau dossier") if operation == "mkdir" else self.tr("Renommer"), current)
             if not ok or not value or value == current:
                 return
             if value in (".", "..") or any(char in value for char in "/\\:\r\n"):
@@ -845,7 +852,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         worker.start()
 
     def import_sites(self):
-        filename, _ = QFileDialog.getOpenFileName(self, self.tr("Importer les serveurs"), "", "Serveurs (*.json *.xml)")
+        filename, _ = QFileDialog.getOpenFileName(self, self.tr("Importer les serveurs"), "", self.tr("Serveurs (*.json *.xml)"))
         if not filename:
             return
         try:
@@ -888,7 +895,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                 box.setDetailedText(redact("\n".join(result.warnings), tuple(result.passwords.values())))
             box.exec()
         except Exception as error:
-            self.on_error(describe_error(error, operation="Import de configuration"))
+            self.on_error(describe_error(error, operation=self.tr("Import de configuration")))
 
     def import_secrets(self, imported, updated, result):
         """Store imported secrets, then mark profiles; undo the vault on failure."""
@@ -909,7 +916,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                 store_credential(connection)
                 stored.append((key, previous))
             except Exception:
-                result.warnings.append(f"{site['name']} : coffre-fort indisponible ; mot de passe non importé.")
+                result.warnings.append(self.tr("{name} : coffre-fort indisponible ; mot de passe non importé.")
+                                       .format(name=site['name']))
         if not stored:
             return
         keys = {key for key, _ in stored}
@@ -924,15 +932,16 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                 try:
                     restore_credential(key, previous)
                 except Exception:
-                    result.warnings.append(f"{key} : mot de passe importé resté dans le coffre-fort ; supprimez-le depuis le gestionnaire d’identifiants.")
+                    result.warnings.append(self.tr("{key} : mot de passe importé resté dans le coffre-fort ; supprimez-le depuis le gestionnaire d’identifiants.")
+                                           .format(key=key))
             for item in updated:
                 item["remember"] = flags.get(identity(item), False)
-            result.warnings.append("Profils importés, mais leur mise à jour finale a échoué : les mots de passe importés ont été retirés du coffre-fort.")
+            result.warnings.append(self.tr("Profils importés, mais leur mise à jour finale a échoué : les mots de passe importés ont été retirés du coffre-fort."))
         self.refresh_sites()
 
     def export_sites(self):
         import json
-        filename, _ = QFileDialog.getSaveFileName(self, self.tr("Exporter les signets"), "serveurs.json", "JSON (*.json)")
+        filename, _ = QFileDialog.getSaveFileName(self, self.tr("Exporter les signets"), self.tr("serveurs.json"), "JSON (*.json)")
         if filename:
             try:
                 Path(filename).write_text(json.dumps([normalize_profile(site) for site in self.sites], ensure_ascii=False, indent=2), encoding="utf-8")
@@ -971,7 +980,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         form = QFormLayout(dialog)
         local_label = QLabel(self.local.path)
         local_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        remote_label = QLabel(f"{self.connection.host} : {self.remote.path}")
+        remote_label = QLabel(self.tr("{host} : {path}").format(host=self.connection.host, path=self.remote.path))
         remote_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         form.addRow(self.tr("Dossier local"), local_label)
         form.addRow(self.tr("Dossier distant"), remote_label)
@@ -1039,7 +1048,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             return
         mirror = any(row[1] in DELETIONS for row in plan)
         dialog = QDialog(self)
-        dialog.setWindowTitle(self.tr("Aperçu de synchronisation — miroir" if mirror else "Aperçu de synchronisation — aucune suppression"))
+        dialog.setWindowTitle(self.tr("Aperçu de synchronisation — miroir") if mirror
+                              else self.tr("Aperçu de synchronisation — aucune suppression"))
         dialog.resize(760, 480)
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel(self.tr("Sélectionnez les éléments à traiter. Les suppressions sont définitives ; "
@@ -1063,7 +1073,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         layout.addWidget(all_box)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         copy_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        copy_button.setText(self.tr("Appliquer la sélection" if mirror else "Copier la sélection"))
+        copy_button.setText(self.tr("Appliquer la sélection") if mirror else self.tr("Copier la sélection"))
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
@@ -1343,7 +1353,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.activity_tabs.setCurrentWidget(self.log_panel)
         summary = error.summary if isinstance(error, ErrorInfo) else str(error)
         if not isinstance(error, ErrorInfo):
-            self.log("Erreur : " + summary)
+            self.log(self.tr("Erreur : %s") % summary)
         self.statusBar().showMessage(self.tr("Erreur : %s") % summary)
         if (isinstance(error, ErrorInfo) and error.retryable and
             self.settings.value("auto_reconnect", False, type=bool) and

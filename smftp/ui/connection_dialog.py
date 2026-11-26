@@ -88,7 +88,7 @@ class ConnectionDialog(QDialog):
         self.name.setPlaceholderText(self.tr("Ex. Site de production (par défaut : l’hôte)"))
         self.protocol = QComboBox()
         for value, label in PROTOCOL_LABELS.items():
-            self.protocol.addItem(label, value)
+            self.protocol.addItem(self.tr(label), value)
         self.host = QLineEdit()
         self.host.setPlaceholderText(self.tr("ftp.exemple.fr ou ftp://utilisateur@hôte:21"))
         self.host_help = self.tr("Adresse du serveur. Vous pouvez coller une adresse complète "
@@ -293,7 +293,7 @@ class ConnectionDialog(QDialog):
                                          "Préférez FTPS ou SFTP si le serveur les accepte."))
         else:
             self.warning.setObjectName("muted")
-            self.warning.setText(self.tr("Connexion chiffrée : %s.") % PROTOCOL_LABELS[protocol])
+            self.warning.setText(self.tr("Connexion chiffrée : %s.") % self.tr(PROTOCOL_LABELS[protocol]))
         self.warning.style().unpolish(self.warning)
         self.warning.style().polish(self.warning)
         self.validate()
@@ -339,7 +339,9 @@ class ConnectionDialog(QDialog):
                 profile_for(self.connection())
             except (ValueError, TypeError) as error:
                 message = str(error)
-                field = next((f for f in ("Hôte", "Utilisateur") if message.startswith(f)), "Port")
+                # The message starts with the field name, in French or translated.
+                field = next((f for f in ("Hôte", "Utilisateur")
+                              if message.startswith(f) or message.startswith(self.tr(f))), "Port")
                 found[field] = message
         return found
 
@@ -412,12 +414,19 @@ class ConnectionDialog(QDialog):
         self.test_button.setEnabled(False)
         self.test_button.setText(self.tr("Test en cours…"))
         self.probe = ConnectionProbe(self.connection())
-        self.probe.step.connect(lambda text: self.show_test_result(text.removeprefix("Statut : "), "muted"))
+        self.probe.step.connect(lambda text: self.show_test_result(self.without_status(text), "muted"))
         self.probe.succeeded.connect(lambda text: self.show_test_result("✓ " + text, "success"))
         self.probe.failed.connect(self.test_failed)
         self.probe.host_unknown.connect(self.test_host_unknown)
         self.probe.finished.connect(self.test_finished)
         self.probe.start()
+
+    def without_status(self, text):
+        """Drop the "Statut : " prefix of a progress step, in French or translated ("Status: ")."""
+        for prefix in ("Statut : ", self.tr("Statut") + " : ", self.tr("Statut") + ": "):
+            if text.startswith(prefix):
+                return text[len(prefix):]
+        return text
 
     def test_finished(self):
         self.test_button.setText(self.tr("Tester la connexion"))

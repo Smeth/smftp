@@ -48,6 +48,19 @@ Sur Linux / macOS : `python3 -m venv .venv`, puis `.venv/bin/pip install -r requ
 
 Raccourcis : `Ctrl+K` connexion, `Ctrl+F` recherche dans le panneau actif, `Ctrl+N` dossier, `F2` renommer, `Suppr` supprimer, `F5` actualiser. Double-cliquez sur un dossier pour l’ouvrir.
 
+## Langues
+
+SMFTP est disponible en **français** et en **anglais**. Par défaut, il suit la langue d’affichage de Windows (français pour un Windows français, anglais sinon). **Outils → Préférences → Langue / Language** impose une langue ; le changement s’applique au redémarrage. `--lang=en` ou `--lang=fr` force une langue au lancement. L’assistant IA répond dans la langue de l’interface ; l’installeur suit la langue de Windows.
+
+Le code est écrit en français : chaque texte affiché passe par `self.tr("…")` (classes Qt) ou `tr("…")` de `smftp.i18n` (le reste), avec des parties variables nommées (`tr("Copie de {name}").format(name=…)`). Les traductions anglaises sont dans `resources/translations/smftp_en.json`. Après avoir ajouté ou modifié un texte :
+
+```powershell
+.\.venv\Scripts\python.exe tools\i18n_extract.py          # ajoute les nouveaux textes au catalogue (valeur vide)
+.\.venv\Scripts\python.exe tools\i18n_extract.py --check  # liste les textes encore sans traduction
+```
+
+La suite de tests échoue tant qu’un texte n’a pas de traduction, ou qu’une fenêtre affiche encore du français en anglais. Pour une nouvelle langue : copier `smftp_en.json` en `smftp_<code>.json`, le traduire et ajouter le code dans `LANGUAGES` (`smftp/i18n.py`).
+
 ## Architecture
 
 ```text
@@ -121,7 +134,7 @@ Résultat : `dist/SMFTP/SMFTP.exe`, avec les licences dans `dist/SMFTP/licenses`
 - L’installeur ([installer/smftp.iss](installer/smftp.iss)) installe par utilisateur, sans droits administrateur, et conserve profils et mots de passe à la désinstallation. Il nécessite Inno Setup 6 (`winget install JRSoftware.InnoSetup`).
 - Sans signature, Windows SmartScreen avertit au premier lancement de l’installeur Uptodown / GitHub. Le paquet MSIX n’a pas besoin de signature : le Store le signe.
 - Politique de confidentialité exigée par le Store : [docs/CONFIDENTIALITE.md](docs/CONFIDENTIALITE.md). Indiquer son adresse publique dans Partner Center.
-- Langue à déclarer sur les fiches : français uniquement.
+- Langues à déclarer sur les fiches : français et anglais.
 
 ## Licence
 
@@ -131,7 +144,7 @@ Ce n’est pas une licence « open source » au sens de l’OSI, car l’usage c
 
 ## Limites et suites prévues
 
-Cette version est une base fonctionnelle, pas encore un remplacement complet de FileZilla. Restent notamment le choix d’autres langues pour toute l’application, les animations, et la recherche dans le contenu des fichiers. Le français est la langue de l’application et le catalogue Qt français est fourni ; les autres catalogues applicatifs ne le sont pas.
+Cette version est une base fonctionnelle, pas encore un remplacement complet de FileZilla. Restent notamment les animations et la recherche dans le contenu des fichiers.
 
 Le dépôt sur dossier fonctionne dans les deux vues, mais la surbrillance avancée de la cible reste à améliorer. Le glisser externe requiert une préparation préalable, décrite plus haut. Le double-clic distant ouvre l’éditeur ou l’aperçu ; sa coloration est générique et ne remplace pas un IDE.
 

@@ -1,6 +1,7 @@
 """Conservative parsers for legacy Unix and Windows FTP LIST listings."""
 from datetime import datetime
 import re
+from smftp.i18n import tr
 from smftp.models.entries import Entry
 
 # English, French and German abbreviations seen in localized "ls -l" output.
@@ -88,7 +89,7 @@ def parse_list_line(line: str) -> Entry | None:
             hour = hour % 12 + (12 if ampm.upper() == "PM" else 0)
         date = datetime(year, int(month), int(day), hour, int(minute))
         return Entry(name, size.upper() == "<DIR>", 0 if size.upper() == "<DIR>" else int(size), date.timestamp())
-    raise ValueError("Format LIST non reconnu ; la liste ne peut pas être interprétée avec fiabilité.")
+    raise ValueError(tr("Format LIST non reconnu ; la liste ne peut pas être interprétée avec fiabilité."))
 
 
 def parse_listing(lines) -> tuple[list[Entry], int]:
@@ -107,5 +108,5 @@ def parse_listing(lines) -> tuple[list[Entry], int]:
         if entry is not None and entry.name not in (".", ".."):
             entries.append(entry)
     if skipped and not entries:
-        raise ValueError("Format LIST non reconnu ; la liste ne peut pas être interprétée avec fiabilité.")
+        raise ValueError(tr("Format LIST non reconnu ; la liste ne peut pas être interprétée avec fiabilité."))
     return entries, skipped

@@ -6,18 +6,19 @@ from PySide6.QtCore import Signal
 from smftp.workers.transfer import TransferWorker, RateLimiter
 from smftp.ui.explorer import size_label
 from smftp.ui.icons import icon_button, set_icon
+from smftp.i18n import tr
 
 
 def duration_label(seconds: float) -> str:
     """Remaining time as "45 s", "3 min 05 s" or "1 h 02 min"."""
     seconds = int(round(seconds))
     if seconds < 60:
-        return f"{seconds} s"
+        return tr("{seconds} s").format(seconds=seconds)
     minutes, seconds = divmod(seconds, 60)
     if minutes < 60:
-        return f"{minutes} min {seconds:02d} s"
+        return tr("{minutes} min {seconds} s").format(minutes=minutes, seconds=f"{seconds:02d}")
     hours, minutes = divmod(minutes, 60)
-    return f"{hours} h {minutes:02d} min"
+    return tr("{hours} h {minutes} min").format(hours=hours, minutes=f"{minutes:02d}")
 
 
 class Transfers(QWidget):
@@ -187,13 +188,14 @@ class Transfers(QWidget):
     def add(self, task, *, restored=False, transient=False):
         known = self.queued.get(self.task_key(task))
         if known is not None and known["state"] in ("pending", "paused_pending", "active"):
-            self.activity.emit("Statut : ce transfert est déjà dans la file.")
+            self.activity.emit(self.tr("Statut : ce transfert est déjà dans la file."))
             return None
         from pathlib import Path
         server = f"{task.connection.user}@{task.connection.host}" if task.connection.host else ""
         destination = f"{server}:{task.remote}" if task.upload else task.local
-        item = QTreeWidgetItem([Path(task.local).name, "↑ Envoi" if task.upload else "↓ Réception", "", "—", "—",
-                                "En attente", "—", destination])
+        # Column 5 shows the state; the internal states ("Terminé", "Échoué"…) stay in French.
+        item = QTreeWidgetItem([Path(task.local).name, self.tr("↑ Envoi") if task.upload else self.tr("↓ Réception"),
+                                "", "—", "—", self.tr("En attente"), "—", destination])
         item.setToolTip(7, (f"{task.local}  →  {server}:{task.remote}" if task.upload
                             else f"{server}:{task.remote}  →  {task.local}"))
         self.tables[0].addTopLevelItem(item)
@@ -207,7 +209,7 @@ class Transfers(QWidget):
                   "state": "paused_pending" if restored else "pending", "speed": 0,
                   "restored": restored, "transient": transient}
         if restored:
-            item.setText(5, "Restauré — en pause")
+            item.setText(5, self.tr("Restauré — en pause"))
         worker.updated.connect(lambda done, total, speed, r=record: self.update_progress(r, done, total, speed))
         worker.activity.connect(self.activity.emit)
         worker.conflict_found.connect(lambda name, r=record: self.resolve_conflict(r, name))
@@ -231,7 +233,7 @@ class Transfers(QWidget):
             write_queue([r["task"] for r in self.records if not r["transient"] and r["state"] in
                          ("pending", "paused_pending", "active", "Échoué")])
         except (OSError, ValueError):
-            self.activity.emit("Erreur : impossible de conserver la file de transferts sur disque.")
+            self.activity.emit(self.tr("Erreur : impossible de conserver la file de transferts sur disque."))
 
     def restore(self):
         if self.stopping:
@@ -243,14 +245,14 @@ class Transfers(QWidget):
                 for task in tasks:
                     self.add(task, restored=True)
             if tasks:
-                self.activity.emit("Statut : file restaurée en pause. Connectez le profil puis choisissez Reprendre tout.")
+                self.activity.emit(self.tr("Statut : file restaurée en pause. Connectez le profil puis choisissez Reprendre tout."))
         except (OSError, ValueError, KeyError, TypeError):
             from smftp.utils.queue_store import quarantine_queue
             kept = quarantine_queue()
             if kept:
-                self.activity.emit(f"Erreur : la file sauvegardée est illisible. Aucune tâche n’a été lancée. Le fichier a été mis de côté sous {kept} pour ne pas être écrasé.")
+                self.activity.emit(self.tr("Erreur : la file sauvegardée est illisible. Aucune tâche n’a été lancée. Le fichier a été mis de côté sous {path} pour ne pas être écrasé.").format(path=kept))
             else:
-                self.activity.emit("Erreur : la file sauvegardée est illisible et n’a pas pu être mise de côté. Aucune tâche n’a été lancée.")
+                self.activity.emit(self.tr("Erreur : la file sauvegardée est illisible et n’a pas pu être mise de côté. Aucune tâche n’a été lancée."))
 
     def authorize(self, connection):
         for record in self.records:
@@ -264,7 +266,7 @@ class Transfers(QWidget):
             if r["state"] == "active":
                 r["worker"].running.clear()
                 r["speed"] = 0
-                r["item"].setText(5, "En pause")
+                r["item"].setText(5, self.tr("En pause"))
         self.persist()
         self.speed_changed.emit(0)
         self.update_actions()
@@ -276,7 +278,7 @@ class Transfers(QWidget):
                 r["state"] = "pending"
             if r["state"] == "active":
                 r["worker"].running.set()
-                r["item"].setText(5, "En cours")
+                r["item"].setText(5, self.tr("En cours"))
         self.schedule()
 
     def cancel_all(self):
@@ -334,7 +336,7 @@ class Transfers(QWidget):
                 break
             if record["state"] == "pending" and not record["restored"]:
                 record["state"] = "active"
-                record["item"].setText(5, "En cours")
+                record["item"].setText(5, self.tr("En cours"))
                 record["worker"].start()
                 active += 1
         self.update_actions()
@@ -358,7 +360,8 @@ class Transfers(QWidget):
 
             def describe(meta):
                 size, modified = meta
-                when = datetime.fromtimestamp(modified).strftime("%d/%m/%Y %H:%M") if modified else "date inconnue"
+                when = (datetime.fromtimestamp(modified).strftime(self.tr("%d/%m/%Y %H:%M")) if modified
+                        else self.tr("date inconnue"))
                 return f"{size_label(int(size))} — {when}"
             upload = details.get("upload")
             source_place, target_place = (self.tr("sur ce PC"), self.tr("sur le serveur")) if upload else \
@@ -398,7 +401,7 @@ class Transfers(QWidget):
         record["state"] = status
         record["speed"] = 0
         self.speed_changed.emit(sum(r["speed"] for r in self.records if r["state"] == "active"))
-        record["item"].setText(5, status)
+        record["item"].setText(5, self.tr(status))  # status stays French: compared here and elsewhere
         if status == "Terminé":
             record["bar"].setValue(100)
             self.completed.emit(record["task"])
@@ -407,7 +410,7 @@ class Transfers(QWidget):
         if index >= 0:
             item = table.takeTopLevelItem(index)
             self.tables[2 if status == "Terminé" else 1].addTopLevelItem(item)
-            item.setText(2, "100 %" if status == "Terminé" else "Interrompu")
+            item.setText(2, self.tr("100 %") if status == "Terminé" else self.tr("Interrompu"))
         self.changed.emit()
         self.outcome.emit(record["task"], status)
         self.persist()
@@ -422,17 +425,17 @@ class Transfers(QWidget):
             worker = record["worker"]
             if record["state"] == "pending":
                 record["state"] = "paused_pending"
-                record["item"].setText(5, "En pause")
+                record["item"].setText(5, self.tr("En pause"))
             elif record["state"] == "paused_pending":
                 record["state"] = "pending"
-                record["item"].setText(5, "En attente")
+                record["item"].setText(5, self.tr("En attente"))
             if record["state"] == "active":
                 if worker.running.is_set():
                     worker.running.clear()
-                    record["item"].setText(5, "En pause")
+                    record["item"].setText(5, self.tr("En pause"))
                 else:
                     worker.running.set()
-                    record["item"].setText(5, "En cours")
+                    record["item"].setText(5, self.tr("En cours"))
         self.schedule()
 
     def cancel(self):

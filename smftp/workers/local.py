@@ -28,31 +28,31 @@ class LocalOperation(QThread):
                 overwrite = len(self.arguments) > 2 and self.arguments[2]
                 if target.exists() or target.is_symlink():
                     if not (overwrite and self.replaceable(source, target)):
-                        raise FileExistsError(f"La destination existe déjà : {target}")
+                        raise FileExistsError(self.tr("La destination existe déjà : {path}").format(path=target))
                     self.replace_file(source, target, keep_source=False)
                     return
                 if source.is_dir() and source.resolve() in target.resolve().parents:
-                    raise ValueError("Un dossier ne peut pas être déplacé dans lui-même.")
+                    raise ValueError(self.tr("Un dossier ne peut pas être déplacé dans lui-même."))
                 shutil.move(str(source), str(target))
             elif self.operation == "copy":
                 target = Path(self.arguments[1])
                 overwrite = len(self.arguments) > 2 and self.arguments[2]
                 if source.is_symlink():
-                    raise ValueError("Les liens symboliques ne sont pas copiés.")
+                    raise ValueError(self.tr("Les liens symboliques ne sont pas copiés."))
                 if target.exists() or target.is_symlink():
                     if not (overwrite and self.replaceable(source, target)):
-                        raise FileExistsError(f"La destination existe déjà : {target}")
+                        raise FileExistsError(self.tr("La destination existe déjà : {path}").format(path=target))
                     self.replace_file(source, target, keep_source=True)
                     return
                 if source.is_dir():
                     if source.resolve() in target.resolve().parents:
-                        raise ValueError("Un dossier ne peut pas être copié dans lui-même.")
+                        raise ValueError(self.tr("Un dossier ne peut pas être copié dans lui-même."))
                     shutil.copytree(source, target, symlinks=True)
                 else:
                     shutil.copy2(source, target)
         except Exception as error:
             detail = f" ({error})" if str(error) else ""
-            self.failed.emit("L’opération locale a échoué. Vérifiez les permissions et le nom de destination." + detail)
+            self.failed.emit(self.tr("L’opération locale a échoué. Vérifiez les permissions et le nom de destination.") + detail)
 
     @staticmethod
     def replaceable(source: Path, target: Path) -> bool:

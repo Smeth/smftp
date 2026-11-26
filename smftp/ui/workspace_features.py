@@ -49,6 +49,46 @@ L’<b>Assistant IA</b> répond à vos questions et prépare des actions ; chacu
 <a href="https://github.com/Smeth/smftp/blob/main/docs/CONFIDENTIALITE.md">confidentialité</a></p>
 """
 
+# English version of the guide: kept whole here rather than split into catalog entries.
+HELP_HTML_EN = """
+<h2>Getting started</h2>
+<p><b>New connection</b> (Ctrl+K): choose SFTP if possible (encrypted), then the host, the user and the password.
+Tick “Remember” to keep the password in the Windows vault. After that, double-clicking the server in
+“My servers” is enough. Your FileZilla sites can be imported with <b>Servers → Import</b>.</p>
+<h2>Files</h2>
+<p>Your computer on the left, the server on the right. Drag files from one panel to the other to copy them.
+Right click: download, rename, delete, permissions, edit a text file.</p>
+<h2>Transfers</h2>
+<p>The <b>Transfers</b> tab shows the queue: pause, cancel, retry. Every file is checked after copying
+(size, and checksum when the server supports it). An existing file is never replaced without your consent.</p>
+<h2>Synchronization</h2>
+<p><b>Tools → Synchronize folders</b> compares the two folders on screen and shows you the list before any copy.
+<b>Mirror mode</b> also deletes from the destination what no longer exists in the source: check the preview.</p>
+<h2>SSH terminal, scheduled tasks, assistant</h2>
+<p>An “SSH (terminal)” profile opens a console. <b>Tools → Scheduled tasks</b> runs uploads, downloads
+or synchronizations at set times, as long as SMFTP is open (or minimized to the notification area).
+The <b>AI Assistant</b> answers your questions and prepares actions; each one is confirmed with you before it is carried out.</p>
+<h2>Shortcuts</h2>
+<table cellpadding="3">
+<tr><td>Ctrl+K</td><td>New connection</td><td>Ctrl+R</td><td>Reconnect</td></tr>
+<tr><td>F5</td><td>Refresh</td><td>Ctrl+F</td><td>Search in the folder</td></tr>
+<tr><td>Enter</td><td>Open</td><td>Backspace, Alt+↑</td><td>Parent folder</td></tr>
+<tr><td>Alt+← / Alt+→</td><td>Previous / next folder</td><td>Ctrl+N</td><td>New folder</td></tr>
+<tr><td>F2</td><td>Rename</td><td>Del</td><td>Delete</td></tr>
+<tr><td>Ctrl+C / X / V</td><td>Copy / cut / paste</td><td>Ctrl+Shift+F</td><td>Search in subfolders</td></tr>
+<tr><td>Ctrl+Shift+T</td><td>New terminal session</td><td>Ctrl+Shift+I</td><td>Assistant</td></tr>
+<tr><td>Alt+letter</td><td>Open a menu (Alt+F: File…)</td><td>F1</td><td>This help</td></tr>
+</table>
+<p>Full documentation: <a href="https://github.com/Smeth/smftp#readme">github.com/Smeth/smftp</a> ·
+<a href="https://github.com/Smeth/smftp/blob/main/docs/CONFIDENTIALITE.md">privacy</a></p>
+"""
+
+
+def help_html() -> str:
+    """The in-app guide in the session's language."""
+    from smftp.i18n import language
+    return HELP_HTML_EN if language() == "en" else HELP_HTML
+
 
 class WorkspaceFeatures:
     def initialize_features(self):
@@ -157,12 +197,15 @@ class WorkspaceFeatures:
                 if action.text() == self.tr(title):
                     self.menuBar().addAction(action)
         # Alt+letter opens each menu (Alt+F: Fichier…), as in other Windows applications.
-        mnemonics = {"Fichier": "&Fichier", "Édition": "É&dition", "Affichage": "&Affichage", "Serveurs": "&Serveurs",
-                     "Transferts": "&Transferts", "Outils": "&Outils", "Aide": "A&ide"}
+        # Keyed by the displayed (translated) title, so it works in every language.
+        mnemonics = {self.tr("Fichier"): self.tr("&Fichier"), self.tr("Édition"): self.tr("É&dition"),
+                     self.tr("Affichage"): self.tr("&Affichage"), self.tr("Serveurs"): self.tr("&Serveurs"),
+                     self.tr("Transferts"): self.tr("&Transferts"), self.tr("Outils"): self.tr("&Outils"),
+                     self.tr("Aide"): self.tr("A&ide")}
         for action in self.menuBar().actions():
             label = mnemonics.get(action.text())
             if label:
-                action.setText(self.tr(label))
+                action.setText(label)
         self.restore_layout()
         self.refresh_sites()
         QTimer.singleShot(0, self.transfers.restore)
@@ -286,8 +329,8 @@ class WorkspaceFeatures:
         else:
             self.center.setCurrentWidget(self.files_view)
             if self.online and self.connection:
-                self.statusBar().showMessage(f"●  Connecté    •    {self.connection.host}    •    "
-                                             f"{protocol_label(self.connection.protocol)}")
+                self.statusBar().showMessage(self.tr("●  Connecté    •    {host}    •    {protocol}").format(
+                    host=self.connection.host, protocol=protocol_label(self.connection.protocol)))
             else:
                 self.statusBar().showMessage(self.tr("●  Déconnecté"))
         self.update_site_states()
@@ -376,12 +419,13 @@ class WorkspaceFeatures:
             return
         states = {"connecting": self.tr("connexion…"), "open": self.tr("connecté"), "closed": self.tr("session terminée")}
         connection = session.connection
-        self.statusBar().showMessage(f"●  {self.tr('Terminal')} {states.get(session.state, '')}    •    "
-                                     f"{connection.user}@{connection.host}    •    SSH")
+        self.statusBar().showMessage(self.tr("●  Terminal {state}    •    {user}@{host}    •    SSH").format(
+            state=states.get(session.state, ""), user=connection.user, host=connection.host))
 
     def terminal_failed(self, info, session):
         secrets = tuple(filter(None, [session.connection.password]))
-        self.log(redact(f"[Terminal {session.title}] Erreur : {info.summary}\n{info.details}", secrets))
+        self.log(redact(self.tr("[Terminal {title}] Erreur : {summary}\n{details}").format(
+            title=session.title, summary=info.summary, details=info.details), secrets))
         self.statusBar().showMessage(self.tr("Terminal : %s") % redact(info.summary, secrets), 8000)
 
     def terminal_host_unknown(self, error, session):
@@ -628,7 +672,7 @@ class WorkspaceFeatures:
         worker = SearchWorker(panel.path, pattern, self.connection if panel.remote else None, self)
         self.search_workers.append(worker)
         from smftp.ui.explorer import size_label
-        worker.found.connect(lambda path, entry: table.addTopLevelItem(QTreeWidgetItem([path, "Dossier" if entry.is_dir else "Fichier", "—" if entry.is_dir else size_label(entry.size)])))
+        worker.found.connect(lambda path, entry: table.addTopLevelItem(QTreeWidgetItem([path, self.tr("Dossier") if entry.is_dir else self.tr("Fichier"), "—" if entry.is_dir else size_label(entry.size)])))
         worker.failed.connect(self.on_error)
         stopped_by_user = []
 
@@ -691,7 +735,7 @@ class WorkspaceFeatures:
         layout = QVBoxLayout(dialog)
         text = QTextBrowser()
         text.setOpenExternalLinks(True)
-        text.setHtml(self.tr(HELP_HTML))
+        text.setHtml(help_html())
         layout.addWidget(text)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.button(QDialogButtonBox.StandardButton.Close).setText(self.tr("Fermer"))
@@ -744,12 +788,13 @@ class WorkspaceFeatures:
             backend = self.tr("Indisponible")
         from smftp.workers.updates import CURRENT_VERSION
         import paramiko
+        connection = (self.connection.protocol + " " + self.connection.host if self.online and self.connection
+                      else self.tr("aucune"))
         text = (f"SMFTP {CURRENT_VERSION}\nPython {platform.python_version()}\nQt / PySide6 {__version__}\n"
                 f"Paramiko {paramiko.__version__} • keyring {getattr(keyring, '__version__', '?')}\n"
                 f"{platform.system()} {platform.release()} ({platform.machine()})\n"
-                f"Coffre-fort : {backend}\nDonnées : {data_dir()}\n"
-                f"Connexion : {self.connection.protocol + ' ' + self.connection.host if self.online and self.connection else 'aucune'}\n"
-                f"File : {len(self.transfers.records)} tâche(s)")
+                + self.tr("Coffre-fort : {backend}\nDonnées : {data}\nConnexion : {connection}\nFile : %n tâche(s)", "",
+                          len(self.transfers.records)).format(backend=backend, data=data_dir(), connection=connection))
         dialog = QDialog(self)
         dialog.setWindowTitle(self.tr("Diagnostic"))
         layout = QVBoxLayout(dialog)
@@ -765,7 +810,7 @@ class WorkspaceFeatures:
         save = QPushButton(self.tr("Enregistrer…"))
         def save_report():
             from PySide6.QtWidgets import QFileDialog
-            filename, _ = QFileDialog.getSaveFileName(dialog, self.tr("Enregistrer le diagnostic"), "smftp-diagnostic.txt", "Texte (*.txt)")
+            filename, _ = QFileDialog.getSaveFileName(dialog, self.tr("Enregistrer le diagnostic"), "smftp-diagnostic.txt", self.tr("Texte (*.txt)"))
             if filename:
                 try:
                     Path(filename).write_text(text, encoding="utf-8")

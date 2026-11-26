@@ -20,6 +20,7 @@ def is_junction(path) -> bool:
 
 
 # Plan row states. Copies keep (path, state, size, destination metadata).
+# Internal values compared in the code: translated only where shown (self.tr(state)).
 NEW, MODIFIED, CONTENT, DELETE_FILE, DELETE_DIR = "Nouveau", "Modifié", "Contenu différent", "À supprimer", "Dossier à supprimer"
 DELETIONS = (DELETE_FILE, DELETE_DIR)
 
@@ -66,7 +67,7 @@ class SyncPlanner(QThread):
                 if self.isInterruptionRequested():
                     return
                 if depth > MAX_DEPTH:
-                    raise ValueError("Arborescence distante trop profonde (boucle de liens ?).")
+                    raise ValueError(self.tr("Arborescence distante trop profonde (boucle de liens ?)."))
                 for item in client.listdir(path):
                     if item.name in (".", "..") or any(c in item.name for c in "/\\:"):
                         raise ValueError
@@ -98,7 +99,8 @@ class SyncPlanner(QThread):
                     same = self.same_content(client, path)
                     if same is None:
                         hashing = False
-                        self.note.emit("Synchronisation : le serveur ne calcule pas d’empreinte ; comparaison par taille et date uniquement.")
+                        self.note.emit(self.tr("Synchronisation : le serveur ne calcule pas d’empreinte ; "
+                                                "comparaison par taille et date uniquement."))
                         state = MODIFIED if metadata[1] > other[1] + 2 else None
                     else:
                         state = None if same else CONTENT
@@ -108,15 +110,15 @@ class SyncPlanner(QThread):
                     # The destination metadata lets the copy detect later changes.
                     plan.append((path, state, metadata[0], other))
             if self.mirror and getattr(client, "incomplete_listing", False):
-                self.note.emit("Synchronisation miroir : la liste du serveur contient des lignes illisibles ; "
-                               "aucune suppression n’est proposée.")
+                self.note.emit(self.tr("Synchronisation miroir : la liste du serveur contient des lignes illisibles ; "
+                                       "aucune suppression n’est proposée."))
             elif self.mirror:
                 plan.extend(self.mirror_deletions(
                     source, destination, source_dirs, destination_dirs, local_links | remote_links,
                     hides_dotfiles=not self.upload and getattr(client, "hides_dotfiles", False)))
             self.planned.emit(plan)
         except Exception:
-            self.failed.emit("Impossible de comparer les dossiers. Vérifiez la connexion et les droits d’accès.")
+            self.failed.emit(self.tr("Impossible de comparer les dossiers. Vérifiez la connexion et les droits d’accès."))
         finally:
             if client:
                 client.close()
@@ -157,9 +159,9 @@ class SyncPlanner(QThread):
                 continue
             rows.append(row)
         if kept:
-            self.note.emit(f"Synchronisation miroir : {kept} élément(s) de la destination conservé(s) par prudence "
-                           "(liens symboliques ou jonctions, noms ne différant que par les majuscules, "
-                           "ou fichiers cachés que le serveur ne liste pas).")
+            self.note.emit(self.tr("Synchronisation miroir : {count} élément(s) de la destination conservé(s) par prudence "
+                                   "(liens symboliques ou jonctions, noms ne différant que par les majuscules, "
+                                   "ou fichiers cachés que le serveur ne liste pas).").format(count=kept))
         return rows
 
     def same_content(self, client, relative):
@@ -196,13 +198,14 @@ class SyncDeleter(QThread):
                                else self.delete_local(path, state, expected))
                 except Exception as error:
                     removed = False
-                    self.report.emit(f"Erreur : suppression miroir de {path} impossible ({error}). Élément conservé.")
+                    self.report.emit(self.tr("Erreur : suppression miroir de {path} impossible ({reason}). Élément conservé.").format(
+                        path=path, reason=error))
                 if removed:
                     deleted += 1
                 else:
                     kept += 1
         except Exception:
-            self.report.emit("Erreur : connexion impossible pour les suppressions miroir. Rien n’a été supprimé.")
+            self.report.emit(self.tr("Erreur : connexion impossible pour les suppressions miroir. Rien n’a été supprimé."))
         finally:
             if client:
                 try:
@@ -220,15 +223,16 @@ class SyncDeleter(QThread):
             if not entry.is_dir:
                 return False
             if client.listdir(path):
-                self.report.emit(f"Statut : {relative} n’est pas vide ; dossier distant conservé.")
+                self.report.emit(self.tr("Statut : {path} n’est pas vide ; dossier distant conservé.").format(path=relative))
                 return False
             client.rmdir(path)
         else:
             if entry.is_dir or entry.permissions.startswith("l") or (entry.size, entry.modified) != tuple(expected):
-                self.report.emit(f"Statut : {relative} a changé depuis la comparaison ; fichier distant conservé.")
+                self.report.emit(self.tr("Statut : {path} a changé depuis la comparaison ; fichier distant conservé.").format(
+                    path=relative))
                 return False
             client.unlink(path)
-        self.report.emit(f"Statut : supprimé (miroir) : {relative}")
+        self.report.emit(self.tr("Statut : supprimé (miroir) : {path}").format(path=relative))
         return True
 
     def delete_local(self, relative, state, expected):
@@ -243,14 +247,15 @@ class SyncDeleter(QThread):
             return False
         if state == DELETE_DIR:
             if not target.is_dir() or any(target.iterdir()):
-                self.report.emit(f"Statut : {relative} n’est pas vide ; dossier local conservé.")
+                self.report.emit(self.tr("Statut : {path} n’est pas vide ; dossier local conservé.").format(path=relative))
                 return False
             target.rmdir()
         else:
             info = target.stat()
             if not target.is_file() or info.st_size != expected[0] or abs(info.st_mtime - expected[1]) >= 0.001:
-                self.report.emit(f"Statut : {relative} a changé depuis la comparaison ; fichier local conservé.")
+                self.report.emit(self.tr("Statut : {path} a changé depuis la comparaison ; fichier local conservé.").format(
+                    path=relative))
                 return False
             os.unlink(target)
-        self.report.emit(f"Statut : supprimé (miroir) : {relative}")
+        self.report.emit(self.tr("Statut : supprimé (miroir) : {path}").format(path=relative))
         return True

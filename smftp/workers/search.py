@@ -67,7 +67,7 @@ class SearchWorker(QThread):
                         except OSError:
                             continue
         except Exception as error:
-            self.failed.emit(describe_error(error, self.connection, "Recherche récursive"))
+            self.failed.emit(describe_error(error, self.connection, self.tr("Recherche récursive")))
         finally:
             if client:
                 client.close()

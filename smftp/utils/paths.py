@@ -2,14 +2,15 @@
 import os
 import re
 from pathlib import Path
+from smftp.i18n import tr
 
 
 def local_child(directory: str | Path, name: str) -> Path:
     if not name or name in (".", "..") or any(c in name for c in "/\\:\x00"):
-        raise ValueError("Nom distant incompatible avec un téléchargement local sûr.")
+        raise ValueError(tr("Nom distant incompatible avec un téléchargement local sûr."))
     if os.name == "nt" and (any(c in name for c in '<>"|?*') or name.endswith((".", " ")) or
         re.fullmatch(r"(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", name, re.I)):
-        raise ValueError("Ce nom distant n’est pas autorisé par Windows. Renommez-le avant téléchargement.")
+        raise ValueError(tr("Ce nom distant n’est pas autorisé par Windows. Renommez-le avant téléchargement."))
     return Path(directory) / name
 
 
@@ -25,11 +26,11 @@ def unique_copy_name(path, taken, directory=None):
         directory = path.is_dir()
     stem, suffix = (path.stem, path.suffix) if path.suffix and not directory else (path.name, "")
     for number in range(1, 10_000):
-        label = "copie" if number == 1 else f"copie {number}"
+        label = tr("copie") if number == 1 else tr("copie {number}").format(number=number)
         candidate = path.with_name(f"{stem} ({label}){suffix}")
         if not taken(candidate):
             return candidate
-    raise FileExistsError("Aucun nom de copie disponible.")
+    raise FileExistsError(tr("Aucun nom de copie disponible."))
 
 
 # Types that Windows runs, installs or interprets when they are "opened".

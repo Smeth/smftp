@@ -68,6 +68,7 @@ def manifest(name: str, publisher: str, display: str, version: str) -> str:
   </Dependencies>
   <Resources>
     <Resource Language="fr-FR" />
+    <Resource Language="en-US" />
   </Resources>
   <Applications>
     <Application Id="SMFTP" Executable="SMFTP.exe" EntryPoint="Windows.FullTrustApplication">

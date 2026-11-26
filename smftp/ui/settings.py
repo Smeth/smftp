@@ -26,6 +26,15 @@ class SettingsDialog(QDialog):
                                         lambda: self.choose_folder(self.local, self.tr("Dossier local au démarrage")))
         self.temp_picker = icon_button("folder", self.tr("Choisir le dossier temporaire…"),
                                        lambda: self.choose_folder(self.temp, self.tr("Dossier temporaire")))
+        # Language names are written in their own language: whoever opens this finds theirs.
+        from smftp.i18n import LANGUAGES
+        self.language = QComboBox()
+        self.language.addItem(self.tr("Automatique (langue de Windows)"), "auto")
+        for code, name in LANGUAGES.items():
+            self.language.addItem(name, code)
+        self.language.setCurrentIndex(max(0, self.language.findData(settings.value("language", "auto"))))
+        self.language.setAccessibleName("Langue / Language")
+        layout.addRow("Langue / Language", self.language)
         for title, widget in [("Dossier local au démarrage", self.with_button(self.local, self.local_picker)),
                               ("Dossier temporaire", self.with_button(self.temp, self.temp_picker)),
                               ("Transferts simultanés", self.count), ("Fichier existant", self.conflict)]:
@@ -81,6 +90,13 @@ class SettingsDialog(QDialog):
             field.setText(str(Path(folder)))
 
     def persist(self, settings):
+        previous = settings.value("language", "auto")
+        settings.setValue("language", self.language.currentData())
+        if self.language.currentData() != previous:
+            from PySide6.QtWidgets import QMessageBox
+            # Shown in both languages: the new one is not loaded until the restart.
+            QMessageBox.information(self, "SMFTP", "Redémarrez SMFTP pour changer de langue.\n"
+                                                   "Restart SMFTP to change the language.")
         settings.setValue("local_directory", self.local.text())
         settings.setValue("temp_directory", self.temp.text())
         settings.setValue("concurrency", self.count.value())

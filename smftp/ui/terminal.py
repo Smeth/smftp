@@ -549,7 +549,12 @@ class TerminalSession(QWidget):
     def show_step(self, message):
         """Connection steps, in the tab itself: the log is not on screen in the terminal view."""
         if self.state == "connecting":
-            text = message.split(" : ", 1)[-1] if message.startswith("Statut") else message
+            text = message
+            # The "Statut" prefix, in French or translated ("Status: …"), is dropped in the tab.
+            for prefix in ("Statut", self.tr("Statut")):
+                if prefix and message.startswith(prefix):
+                    text = message[len(prefix):].lstrip(" : ")
+                    break
             self.view.write_notice(text[:1].upper() + text[1:], "90")
 
     def on_typed(self, data):
@@ -677,7 +682,8 @@ class TerminalArea(QWidget):
 
     def open(self, site, connection):
         session = TerminalSession(site, connection, self.dark, self.worker_factory)
-        session.status.connect(lambda message, s=session: self.status.emit(f"[Terminal {s.title}] {message}"))
+        session.status.connect(lambda message, s=session: self.status.emit(
+            self.tr("[Terminal {title}] {message}").format(title=s.title, message=message)))
         session.failed.connect(self.failed)
         session.host_unknown.connect(self.host_unknown)
         session.state_changed.connect(self.update_tab)

@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, Q
                                QDialogButtonBox, QMessageBox, QFileDialog, QWidget, QStackedWidget, QPushButton,
                                QSplitter, QAbstractItemView, QHeaderView)
 from smftp.core import schedule as S
+from smftp.i18n import tr
 from smftp.ui.icons import icon_button, recolor, theme_of
 from smftp.utils.storage import data_dir
 from PySide6.QtGui import QBrush, QColor
@@ -32,7 +33,7 @@ class Scheduler(QObject):
         self.runs = {}  # run id -> {"row", "task", "pending": {id(Transfer): Transfer}, "done": [...], "planner"}
         self.stopped = False
         for message in self.store.load():
-            self.log("Erreur : " + message)
+            self.log(self.tr("Erreur : {message}").format(message=message))
         moment = S.now()
         for task in self.store.tasks:
             if task["enabled"] and not task["next_run"]:
@@ -63,13 +64,13 @@ class Scheduler(QObject):
 
     def profile_label(self, key):
         site = self.profiles().get(key)
-        return (site.get("name") or site.get("host")) if site else "Profil supprimé"
+        return (site.get("name") or site.get("host")) if site else self.tr("Profil supprimé")
 
     def save(self):
         try:
             self.store.save()
         except OSError:
-            self.log("Erreur : impossible d’enregistrer les tâches planifiées.")
+            self.log(self.tr("Erreur : impossible d’enregistrer les tâches planifiées."))
         self.changed.emit()
 
     def running(self, task_id):
@@ -93,7 +94,7 @@ class Scheduler(QObject):
     def update_task(self, task_id, data):
         current = self.store.find(task_id)
         if current is None:
-            raise ValueError("Tâche introuvable.")
+            raise ValueError(self.tr("Tâche introuvable."))
         task = S.normalize_task(dict(current, **data, id=task_id), list(self.profiles()))
         if task["recurrence"] != current["recurrence"] or (task["enabled"] and not current["enabled"]):
             if task["recurrence"]["type"] == "once":
@@ -106,12 +107,12 @@ class Scheduler(QObject):
     @staticmethod
     def check_once_in_future(task):
         if task["recurrence"]["type"] == "once" and S.parse_time(task["recurrence"]["at"]) <= S.now():
-            raise ValueError("La date d’exécution unique est déjà passée.")
+            raise ValueError(tr("La date d’exécution unique est déjà passée."))
 
     def remove_task(self, task_id):
         task = self.store.find(task_id)
         if task is None:
-            raise ValueError("Tâche introuvable.")
+            raise ValueError(self.tr("Tâche introuvable."))
         self.store.tasks.remove(task)
         self.save()
 
@@ -121,9 +122,9 @@ class Scheduler(QObject):
     def run_now(self, task_id):
         task = self.store.find(task_id)
         if task is None:
-            raise ValueError("Tâche introuvable.")
+            raise ValueError(self.tr("Tâche introuvable."))
         if self.running(task_id):
-            raise ValueError("Cette tâche est déjà en cours.")
+            raise ValueError(self.tr("Cette tâche est déjà en cours."))
         task["last_run"] = S.stamp(S.now())
         self.start(task, manual=True)
         self.save()
@@ -140,10 +141,11 @@ class Scheduler(QObject):
                 continue
             touched = True
             if state == "missed":
-                self.add_row(task, S.SKIPPED, "Exécution manquée pendant que SMFTP était fermé (rattrapage désactivé).")
+                self.add_row(task, S.SKIPPED,
+                             self.tr("Exécution manquée pendant que SMFTP était fermé (rattrapage désactivé)."))
                 S.advance(task, moment, ran=False)
             elif self.running(task["id"]):
-                self.add_row(task, S.SKIPPED, "L’exécution précédente n’est pas terminée.")
+                self.add_row(task, S.SKIPPED, self.tr("L’exécution précédente n’est pas terminée."))
                 S.advance(task, moment, ran=False)
             else:
                 S.advance(task, moment, ran=True)
@@ -157,7 +159,8 @@ class Scheduler(QObject):
                "manual": manual}
         self.store.history.append(row)
         if status != S.RUNNING:
-            self.log(f"Tâche planifiée « {task['name']} » : {status.lower()} — {detail}")
+            self.log(self.tr("Tâche planifiée « {name} » : {status} — {detail}").format(
+                name=task["name"], status=self.tr(status).lower(), detail=detail))
         return row
 
     def connection_for(self, task):
@@ -165,7 +168,7 @@ class Scheduler(QObject):
         from smftp.utils.profiles import normalize_profile, read_credential
         site = self.profiles().get(task["profile"])
         if site is None:
-            raise ValueError("Le profil de serveur de cette tâche n’existe plus.")
+            raise ValueError(self.tr("Le profil de serveur de cette tâche n’existe plus."))
         profile = normalize_profile(site)
         try:
             password = read_credential(task["profile"])
@@ -173,24 +176,25 @@ class Scheduler(QObject):
             password = None
         anonymous = profile["user"].lower() in ("anonymous", "ftp")
         if password is None and not anonymous and not (profile["protocol"] == "SFTP" and profile["key_file"]):
-            raise ValueError("Mot de passe non mémorisé pour ce profil : modifiez le profil et cochez "
-                             "« Mémoriser dans le coffre-fort système ».")
+            raise ValueError(self.tr("Mot de passe non mémorisé pour ce profil : modifiez le profil et cochez "
+                                     "« Mémoriser dans le coffre-fort système »."))
         return Connection(**profile, password=password or "")
 
     def start(self, task, manual=False):
-        row = self.add_row(task, S.RUNNING, "Démarrage…", manual)
+        row = self.add_row(task, S.RUNNING, self.tr("Démarrage…"), manual)
         run = {"row": row, "task": dict(task), "pending": {}, "done": [], "planner": None}
         self.runs[row["run"]] = run
-        self.log(f"Tâche planifiée « {task['name']} » : démarrage ({S.summary(task)}).")
+        self.log(self.tr("Tâche planifiée « {name} » : démarrage ({action}).").format(
+            name=task["name"], action=S.summary(task)))
         try:
             connection = self.connection_for(task)
             local = Path(task["local"])
             if (task["kind"] == "upload" or task["kind"] == "sync") and not local.exists():
-                raise ValueError(f"Chemin local introuvable : {local}")
+                raise ValueError(self.tr("Chemin local introuvable : {path}").format(path=local))
             if task["kind"] == "sync" and not local.is_dir():
-                raise ValueError(f"La synchronisation demande un dossier local : {local}")
+                raise ValueError(self.tr("La synchronisation demande un dossier local : {path}").format(path=local))
             if task["kind"] == "download" and not local.parent.is_dir():
-                raise ValueError(f"Dossier local introuvable : {local.parent}")
+                raise ValueError(self.tr("Dossier local introuvable : {path}").format(path=local.parent))
         except ValueError as error:
             self.finish(run, S.FAILED, str(error))
             return
@@ -202,7 +206,7 @@ class Scheduler(QObject):
             planner.note.connect(self.log)
             planner.failed.connect(lambda message, r=run: self.finish(r, S.FAILED, message))
             planner.planned.connect(lambda plan, r=run, c=connection: self.enqueue_plan(r, c, plan))
-            row["detail"] = "Comparaison des dossiers…"
+            row["detail"] = self.tr("Comparaison des dossiers…")
             planner.start()
         else:
             from smftp.workers.transfer import Transfer
@@ -227,19 +231,20 @@ class Scheduler(QObject):
                 for part in path.split("/"):
                     destination = local_child(destination, part)
             except ValueError as error:
-                self.log(f"Tâche planifiée « {task['name']} » : {path} ignoré ({error}).")
+                self.log(self.tr("Tâche planifiée « {name} » : {path} ignoré ({reason}).").format(
+                    name=task["name"], path=path, reason=error))
                 continue
             # A destination changed since the comparison is skipped, never overwritten.
             transfers.append(Transfer(connection, str(destination), posixpath.join(task["remote"], path),
                                       task["upload"], conflict="skip", planned=True, expected=expected))
         if not transfers:
-            self.finish(run, S.SUCCESS, "Déjà à jour : aucun fichier nouveau ou modifié.")
+            self.finish(run, S.SUCCESS, self.tr("Déjà à jour : aucun fichier nouveau ou modifié."))
             return
         self.enqueue(run, transfers)
 
     def enqueue(self, run, transfers):
         if self.stopped:
-            self.finish(run, S.INTERRUPTED, "SMFTP se ferme.")
+            self.finish(run, S.INTERRUPTED, self.tr("SMFTP se ferme."))
             return
         with self.window.transfers.batch():
             for transfer in transfers:
@@ -250,9 +255,9 @@ class Scheduler(QObject):
                     run["done"].append("Ignoré")
         count = len(run["pending"])
         if not count:
-            self.finish(run, S.SKIPPED, "Les transferts sont déjà dans la file.")
+            self.finish(run, S.SKIPPED, self.tr("Les transferts sont déjà dans la file."))
             return
-        run["row"]["detail"] = f"{count} transfert(s) en cours…"
+        run["row"]["detail"] = self.tr("{count} transfert(s) en cours…").format(count=count)
         self.changed.emit()
 
     def on_outcome(self, transfer, status):
@@ -267,24 +272,31 @@ class Scheduler(QObject):
         done = run["done"]
         copied = done.count("Terminé")
         failed = len(done) - copied - done.count("Ignoré")
-        noun = "fichier(s)" if run["task"]["kind"] == "sync" else "transfert(s)"
+        files = run["task"]["kind"] == "sync"
         if failed == 0:
-            self.finish(run, S.SUCCESS, f"{copied} {noun} traité(s).")
+            text = self.tr("{copied} fichier(s) traité(s).") if files else self.tr("{copied} transfert(s) traité(s).")
+            self.finish(run, S.SUCCESS, text.format(copied=copied))
         elif copied:
-            self.finish(run, S.PARTIAL, f"{copied} {noun} traité(s), {failed} en échec (voir l’onglet Échoués).")
+            text = (self.tr("{copied} fichier(s) traité(s), {failed} en échec (voir l’onglet Échoués).") if files
+                    else self.tr("{copied} transfert(s) traité(s), {failed} en échec (voir l’onglet Échoués)."))
+            self.finish(run, S.PARTIAL, text.format(copied=copied, failed=failed))
         else:
-            self.finish(run, S.FAILED, f"{failed} {noun} en échec (voir l’onglet Échoués et le journal).")
+            text = (self.tr("{failed} fichier(s) en échec (voir l’onglet Échoués et le journal).") if files
+                    else self.tr("{failed} transfert(s) en échec (voir l’onglet Échoués et le journal)."))
+            self.finish(run, S.FAILED, text.format(failed=failed))
 
     def finish(self, run, status, detail):
         if self.runs.pop(run["row"]["run"], None) is None:
             return
         row = run["row"]
         row.update(status=status, detail=detail, finished=S.stamp(S.now()))
-        self.log(f"Tâche planifiée « {row['name']} » : {status.lower()} — {detail}")
+        self.log(self.tr("Tâche planifiée « {name} » : {status} — {detail}").format(
+            name=row["name"], status=self.tr(status).lower(), detail=detail))
         if status in (S.FAILED, S.PARTIAL):
             tray = getattr(self.window, "tray", None)
             if tray is not None and tray.isVisible():
-                tray.showMessage("SMFTP", f"Tâche « {row['name']} » : {status.lower()}. {detail}")
+                tray.showMessage("SMFTP", self.tr("Tâche « {name} » : {status}. {detail}").format(
+                    name=row["name"], status=self.tr(status).lower(), detail=detail))
         self.save()
         self.finished_run.emit(dict(row))
 
@@ -296,7 +308,8 @@ class Scheduler(QObject):
             if run.get("planner") is not None:
                 run["planner"].requestInterruption()
             row = run["row"]
-            row.update(status=S.INTERRUPTED, detail="SMFTP a été fermé pendant l’exécution.", finished=S.stamp(S.now()))
+            row.update(status=S.INTERRUPTED, detail=self.tr("SMFTP a été fermé pendant l’exécution."),
+                       finished=S.stamp(S.now()))
         self.runs.clear()
         try:
             self.store.save()
@@ -371,7 +384,7 @@ class TaskEditor(QDialog):
         daily_layout.addWidget(self.time)
         self.days = []
         for index, label in enumerate(S.DAYS):
-            box = QCheckBox(label)
+            box = QCheckBox(self.tr(label))
             box.setChecked(index in recurrence.get("days", range(7)))
             box.toggled.connect(self.validate)
             daily_layout.addWidget(box)
@@ -616,11 +629,15 @@ class ScheduleDialog(QDialog):
         for task in self.scheduler.store.tasks:
             following = S.parse_time(task["next_run"])
             last = latest.get(task["id"])
-            status = (S.RUNNING if self.scheduler.running(task["id"]) else
-                      f"{last['status']} ({S.parse_time(last['started']):%d/%m %H:%M})" if last and S.parse_time(last.get("started", "")) else "—")
+            last_started = S.parse_time(last.get("started", "")) if last else None
+            # Statuses are stored in French (schedule.json): translated only here.
+            status = (self.tr(S.RUNNING) if self.scheduler.running(task["id"]) else
+                      f"{self.tr(str(last['status']))} ({last_started.strftime(self.tr('%d/%m %H:%M'))})"
+                      if last_started else "—")
             item = QTreeWidgetItem([task["name"], S.summary(task), self.scheduler.profile_label(task["profile"]),
                                     S.describe(task),
-                                    f"{following:%d/%m/%Y %H:%M}" if following and task["enabled"] else self.tr("Désactivée"),
+                                    following.strftime(self.tr("%d/%m/%Y %H:%M")) if following and task["enabled"]
+                                    else self.tr("Désactivée"),
                                     status])
             item.setData(0, Qt.ItemDataRole.UserRole, task["id"])
             item.setToolTip(1, S.summary(task))
@@ -635,8 +652,9 @@ class ScheduleDialog(QDialog):
         self.history.clear()
         for row in reversed(self.scheduler.store.history[-100:]):
             started = S.parse_time(row.get("started", ""))
-            item = QTreeWidgetItem([f"{started:%d/%m/%Y %H:%M}" if started else "", row.get("name", ""),
-                                    row.get("status", ""), row.get("detail", "")])
+            status = str(row.get("status") or "")
+            item = QTreeWidgetItem([started.strftime(self.tr("%d/%m/%Y %H:%M")) if started else "", row.get("name", ""),
+                                    self.tr(status) if status else "", row.get("detail", "")])
             item.setToolTip(3, row.get("detail", ""))
             color = STATUS_COLORS[theme_of(self)].get(row.get("status"))
             if color:

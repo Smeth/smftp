@@ -15,7 +15,9 @@ import os
 from pathlib import Path
 import tempfile
 import uuid
+from smftp.i18n import tr
 
+# Labels: French source texts, translated where they are shown (tr(label)).
 KINDS = {"sync": "Synchroniser (nouveaux et modifiés)", "upload": "Envoyer", "download": "Télécharger"}
 # Unattended conflict policies; "ask" is not possible without someone in front of the screen.
 CONFLICTS = {"newer": "Remplacer si la source est plus récente", "different": "Remplacer si la taille diffère",
@@ -47,20 +49,20 @@ def stamp(moment: datetime | None) -> str:
 
 def normalize_recurrence(value) -> dict:
     if not isinstance(value, dict):
-        raise ValueError("Récurrence invalide.")
+        raise ValueError(tr("Récurrence invalide."))
     kind = value.get("type")
     if kind == "once":
         at = parse_time(value.get("at", ""))
         if at is None:
-            raise ValueError("Indiquez la date et l’heure de l’exécution unique.")
+            raise ValueError(tr("Indiquez la date et l’heure de l’exécution unique."))
         return {"type": "once", "at": stamp(at)}
     if kind == "interval":
         try:
             minutes = int(value.get("minutes", 0))
         except (TypeError, ValueError):
-            raise ValueError("Intervalle invalide.") from None
+            raise ValueError(tr("Intervalle invalide.")) from None
         if not MIN_INTERVAL <= minutes <= MAX_INTERVAL:
-            raise ValueError(f"L’intervalle doit être compris entre {MIN_INTERVAL} minutes et 7 jours.")
+            raise ValueError(tr("L’intervalle doit être compris entre {minimum} minutes et 7 jours.").format(minimum=MIN_INTERVAL))
         return {"type": "interval", "minutes": minutes}
     if kind == "daily":
         text = str(value.get("time", ""))
@@ -69,15 +71,15 @@ def normalize_recurrence(value) -> dict:
             if not (0 <= hour < 24 and 0 <= minute < 60):
                 raise ValueError
         except ValueError:
-            raise ValueError("Heure invalide : utilisez HH:MM.") from None
+            raise ValueError(tr("Heure invalide : utilisez HH:MM.")) from None
         days = value.get("days", range(7))
         if not isinstance(days, (list, tuple, range)):
-            raise ValueError("Jours invalides.")
+            raise ValueError(tr("Jours invalides."))
         days = sorted({int(d) for d in days if str(d).isdigit() and 0 <= int(d) < 7})
         if not days:
-            raise ValueError("Choisissez au moins un jour.")
+            raise ValueError(tr("Choisissez au moins un jour."))
         return {"type": "daily", "time": f"{hour:02d}:{minute:02d}", "days": days}
-    raise ValueError("Type de récurrence inconnu : once, interval ou daily.")
+    raise ValueError(tr("Type de récurrence inconnu : once, interval ou daily."))
 
 
 def normalize_task(task: dict, profiles: list[str] | None = None) -> dict:
@@ -87,29 +89,29 @@ def normalize_task(task: dict, profiles: list[str] | None = None) -> dict:
     name one of them.
     """
     if not isinstance(task, dict):
-        raise ValueError("La tâche doit être un objet.")
+        raise ValueError(tr("La tâche doit être un objet."))
     # One line, no control characters: a name proposed by the assistant appears in
     # confirmation dialogs and must not be able to fake their content.
     name = " ".join("".join(c if c.isprintable() else " " for c in str(task.get("name", ""))).split())[:80]
     if not name:
-        raise ValueError("Donnez un nom à la tâche.")
+        raise ValueError(tr("Donnez un nom à la tâche."))
     kind = task.get("kind")
     if kind not in KINDS:
-        raise ValueError("Action inconnue : sync, upload ou download.")
+        raise ValueError(tr("Action inconnue : sync, upload ou download."))
     profile = str(task.get("profile", "")).strip()
     if not profile:
-        raise ValueError("Choisissez le profil de serveur.")
+        raise ValueError(tr("Choisissez le profil de serveur."))
     if profiles is not None and profile not in profiles:
-        raise ValueError("Ce profil de serveur n’existe plus.")
+        raise ValueError(tr("Ce profil de serveur n’existe plus."))
     local = str(task.get("local", "")).strip()
     remote = str(task.get("remote", "")).strip()
     if not local or not Path(local).is_absolute():
-        raise ValueError("Indiquez un chemin local complet (ex. C:\\Site).")
+        raise ValueError(tr("Indiquez un chemin local complet (ex. C:\\Site)."))
     if not remote.startswith("/"):
-        raise ValueError("Indiquez un chemin distant complet, commençant par « / ».")
+        raise ValueError(tr("Indiquez un chemin distant complet, commençant par « / »."))
     conflict = task.get("conflict", "newer")
     if conflict not in CONFLICTS:
-        raise ValueError("Règle de remplacement inconnue.")
+        raise ValueError(tr("Règle de remplacement inconnue."))
     clean = {
         "id": str(task.get("id") or uuid.uuid4().hex),
         "name": name,
@@ -164,27 +166,31 @@ def describe(task: dict) -> str:
     recurrence = task["recurrence"]
     if recurrence["type"] == "once":
         at = parse_time(recurrence["at"])
-        return f"Une fois, le {at:%d/%m/%Y à %H:%M}" if at else "Une fois"
+        return (tr("Une fois, le {date}").format(date=at.strftime(tr("%d/%m/%Y à %H:%M"))) if at
+                else tr("Une fois"))
     if recurrence["type"] == "interval":
         minutes = recurrence["minutes"]
         if minutes % 1440 == 0:
-            return f"Tous les {minutes // 1440} jour(s)" if minutes > 1440 else "Toutes les 24 heures"
+            return (tr("Tous les {count} jour(s)").format(count=minutes // 1440) if minutes > 1440
+                    else tr("Toutes les 24 heures"))
         if minutes % 60 == 0:
-            return f"Toutes les {minutes // 60} heure(s)" if minutes > 60 else "Toutes les heures"
-        return f"Toutes les {minutes} minutes"
+            return (tr("Toutes les {count} heure(s)").format(count=minutes // 60) if minutes > 60
+                    else tr("Toutes les heures"))
+        return tr("Toutes les {count} minutes").format(count=minutes)
     days = recurrence["days"]
-    when = ("tous les jours" if len(days) == 7 else "en semaine" if days == [0, 1, 2, 3, 4]
-            else "le week-end" if days == [5, 6] else ", ".join(DAYS[d] for d in days))
-    return f"{when.capitalize()} à {recurrence['time']}"
+    when = (tr("tous les jours") if len(days) == 7 else tr("en semaine") if days == [0, 1, 2, 3, 4]
+            else tr("le week-end") if days == [5, 6] else ", ".join(tr(DAYS[d]) for d in days))
+    return tr("{days} à {time}").format(days=when.capitalize(), time=recurrence["time"])
 
 
 def summary(task: dict) -> str:
     if task["kind"] == "sync":
         arrow = "→" if task["upload"] else "←"
-        return f"Synchroniser {task['local']} {arrow} {task['remote']}"
+        return tr("Synchroniser {local} {arrow} {remote}").format(local=task["local"], arrow=arrow,
+                                                                  remote=task["remote"])
     if task["kind"] == "upload":
-        return f"Envoyer {task['local']} → {task['remote']}"
-    return f"Télécharger {task['remote']} → {task['local']}"
+        return tr("Envoyer {local} → {remote}").format(local=task["local"], remote=task["remote"])
+    return tr("Télécharger {remote} → {local}").format(remote=task["remote"], local=task["local"])
 
 
 def due(task: dict, moment: datetime) -> str | None:
@@ -241,24 +247,25 @@ class ScheduleStore:
             broken = self.path.with_name(f"schedule.illisible-{now():%Y%m%d-%H%M%S}.json")
             try:
                 self.path.replace(broken)
-                problems.append(f"Fichier des tâches planifiées illisible : mis de côté sous {broken.name}.")
+                problems.append(tr("Fichier des tâches planifiées illisible : mis de côté sous {name}.")
+                                .format(name=broken.name))
             except OSError:
-                problems.append("Fichier des tâches planifiées illisible.")
+                problems.append(tr("Fichier des tâches planifiées illisible."))
             return problems
         if not isinstance(raw, dict):
             raw = {}
-            problems.append("Fichier des tâches planifiées d’un format inconnu : aucune tâche chargée.")
+            problems.append(tr("Fichier des tâches planifiées d’un format inconnu : aucune tâche chargée."))
         tasks = raw.get("tasks", [])
         if not isinstance(tasks, list):
             tasks = []
-            problems.append("Liste des tâches planifiées illisible : aucune tâche chargée.")
+            problems.append(tr("Liste des tâches planifiées illisible : aucune tâche chargée."))
         for task in tasks:
             try:
                 self.tasks.append(normalize_task(task))
             except (TypeError, ValueError, AttributeError) as error:
                 label = str(task.get("name", "?")) if isinstance(task, dict) else "?"
-                detail = error if isinstance(error, ValueError) else "format inattendu"
-                problems.append(f"Tâche ignorée ({label}) : {detail}")
+                detail = error if isinstance(error, ValueError) else tr("format inattendu")
+                problems.append(tr("Tâche ignorée ({name}) : {reason}").format(name=label, reason=detail))
         history = raw.get("history", [])
         if not isinstance(history, list):
             history = []
@@ -276,7 +283,7 @@ class ScheduleStore:
         for row in self.history:
             if row.get("status") == RUNNING:
                 row["status"] = INTERRUPTED
-                row["detail"] = "SMFTP a été fermé pendant l’exécution."
+                row["detail"] = tr("SMFTP a été fermé pendant l’exécution.")
         return problems
 
     def save(self) -> None:

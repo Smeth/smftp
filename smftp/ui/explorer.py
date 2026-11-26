@@ -11,10 +11,11 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineE
 
 
 def size_label(size: int) -> str:
+    from smftp.i18n import tr
     value = float(size)
-    for unit in ("o", "Ko", "Mo", "Go"):
-        if value < 1024 or unit == "Go":
-            return f"{value:.0f} {unit}" if unit == "o" else f"{value:.1f} {unit}"
+    for index, unit in enumerate((tr("o"), tr("Ko"), tr("Mo"), tr("Go"))):
+        if value < 1024 or index == 3:
+            return f"{value:.0f} {unit}" if index == 0 else f"{value:.1f} {unit}"
         value /= 1024
 
 
@@ -128,11 +129,11 @@ class Explorer(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 12)
         title = QHBoxLayout()
-        heading = QLabel(self.tr("SERVEUR DISTANT" if remote else "ESPACE LOCAL"))
+        heading = QLabel(self.tr("SERVEUR DISTANT") if remote else self.tr("ESPACE LOCAL"))
         heading.setObjectName("eyebrow")
         title.addWidget(heading)
         title.addStretch()
-        self.count = QLabel(self.tr("Non connecté" if remote else "Votre ordinateur"))
+        self.count = QLabel(self.tr("Non connecté") if remote else self.tr("Votre ordinateur"))
         self.count.setObjectName("muted")
         self.count.setMinimumHeight(24)  # Same height as the server panel's "Déconnecter" button.
         title.addWidget(self.count)
@@ -405,11 +406,13 @@ class Explorer(QWidget):
         self.view.setSortingEnabled(False)
         self.view.clear()
         self.icons.clear()
+        date_format = self.tr("%d/%m/%Y %H:%M")
         for entry in entries:
             suffix_label = Path(entry.name).suffix.lstrip(".").upper()
             # Same wording as the local panel.
-            kind = "Dossier" if entry.is_dir else (f"Fichier {suffix_label}" if suffix_label else "Fichier")
-            date = datetime.fromtimestamp(entry.modified).strftime("%d/%m/%Y %H:%M") if entry.modified else "—"
+            kind = (self.tr("Dossier") if entry.is_dir else
+                    (self.tr("Fichier %s") % suffix_label if suffix_label else self.tr("Fichier")))
+            date = datetime.fromtimestamp(entry.modified).strftime(date_format) if entry.modified else "—"
             item = EntryItem([entry.name, "—" if entry.is_dir else size_label(entry.size), kind, date, entry.permissions])
             values = [entry.name.casefold(), entry.size, kind, entry.modified, entry.permissions]
             for col, value in enumerate(values):

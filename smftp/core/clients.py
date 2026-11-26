@@ -12,17 +12,18 @@ from smftp.models.entries import Connection, Entry
 from smftp.core.protocol_log import LoggedFTP, LoggedFTPS, LoggedImplicitFTPS
 from smftp.core.checksum import ALGORITHMS, LABELS, normalize_algorithm, parse_digest
 from smftp.core.errors import redact
+from smftp.i18n import tr
 
 
 class UnknownHostError(Exception):
     def __init__(self, host: str, key_type: str, key: str, fingerprint: str):
-        super().__init__("L’identité de ce serveur doit être confirmée.")
+        super().__init__(tr("L’identité de ce serveur doit être confirmée."))
         self.host, self.key_type, self.key, self.fingerprint = host, key_type, key, fingerprint
 
 
 class DestinationExists(FileExistsError):
     def __init__(self, source: str, target: str):
-        super().__init__(f"La destination existe déjà : {target}")
+        super().__init__(tr("La destination existe déjà : {target}").format(target=target))
         self.source = source
         self.target = target
 
@@ -84,16 +85,16 @@ class BaseClient(ABC):
             raise DestinationExists(source, target)
         moving = self.exists(source)
         if existing.is_dir or (moving and moving.is_dir):
-            raise IsADirectoryError("Le remplacement d’un dossier n’est pas pris en charge : renommez ou supprimez d’abord la destination.")
+            raise IsADirectoryError(tr("Le remplacement d’un dossier n’est pas pris en charge : renommez ou supprimez d’abord la destination."))
         self.overwrite_move(source, target)
 
     def remove(self, path: str, directory: bool = False, depth: int = 0) -> None:
         if directory:
             if depth > 100:
-                raise ValueError("Arborescence trop profonde (boucle de liens ?) ; suppression interrompue.")
+                raise ValueError(tr("Arborescence trop profonde (boucle de liens ?) ; suppression interrompue."))
             for item in self.listdir(path):
                 if item.name in (".", "..") or any(c in item.name for c in "/\\\x00"):
-                    raise ValueError("Nom distant invalide ; suppression interrompue.")
+                    raise ValueError(tr("Nom distant invalide ; suppression interrompue."))
                 # A link is removed itself, never followed into its target.
                 is_link = item.permissions.startswith("l")
                 self.remove(posixpath.join(path, item.name), item.is_dir and not is_link, depth + 1)
@@ -169,17 +170,18 @@ class FTPClient(BaseClient):
         # Set before connecting: ftplib builds the control-channel reader in connect().
         self.ftp.encoding = (detected_encodings.get(self.identity, "utf-8") if self.auto_encoding
                              else connection.encoding)
-        self.report(f"Statut : résolution de {connection.host} et connexion TCP au port {connection.port}…")
+        self.report(tr("Statut : résolution de {host} et connexion TCP au port {port}…").format(
+            host=connection.host, port=connection.port))
         self.ftp.connect(connection.host, connection.port, timeout=connection.timeout)
-        self.report("Statut : serveur FTP joignable ; authentification en cours…")
+        self.report(tr("Statut : serveur FTP joignable ; authentification en cours…"))
         self.ftp.login(connection.user, connection.password)
-        self.report("Statut : authentification FTP réussie.")
+        self.report(tr("Statut : authentification FTP réussie."))
         self.ftp.set_pasv(connection.passive)
-        self.report("Statut : mode de transfert " + ("passif (PASV)." if connection.passive else
-                    "actif (PORT) : le serveur se connecte à votre poste pour chaque transfert."))
+        self.report(tr("Statut : mode de transfert passif (PASV).") if connection.passive else
+                    tr("Statut : mode de transfert actif (PORT) : le serveur se connecte à votre poste pour chaque transfert."))
         if self.tls:
             self.ftp.prot_p()
-            self.report("Statut : chiffrement TLS du canal de données activé.")
+            self.report(tr("Statut : chiffrement TLS du canal de données activé."))
         if self.auto_encoding and self.ftp.encoding == "utf-8":
             try:
                 features = self.ftp.sendcmd("FEAT").upper().split()
@@ -187,9 +189,9 @@ class FTPClient(BaseClient):
                     self.ftp.sendcmd("OPTS UTF8 ON")
             except ftplib.all_errors:
                 pass
-        self.report(f"Statut : encodage des noms de fichiers : {self.ftp.encoding}"
-                    + (" (automatique)." if self.auto_encoding else "."))
-        self.report("Statut : lecture du dossier de départ…")
+        self.report((tr("Statut : encodage des noms de fichiers : {encoding} (automatique).") if self.auto_encoding else
+                     tr("Statut : encodage des noms de fichiers : {encoding}.")).format(encoding=self.ftp.encoding))
+        self.report(tr("Statut : lecture du dossier de départ…"))
         return self.ftp.pwd()
 
     def set_encoding(self, encoding: str) -> None:
@@ -222,12 +224,13 @@ class FTPClient(BaseClient):
             if self.auto_encoding and self.ftp.encoding == "utf-8":
                 # Latin-1 maps every byte to one character and back: paths stay exact.
                 self.set_encoding("latin-1")
-                self.report("Statut : noms de fichiers non UTF-8 ; passage automatique en ISO-8859-1 (Latin-1). "
-                            "Choisissez l’encodage exact dans le profil si des accents restent incorrects.")
+                self.report(tr("Statut : noms de fichiers non UTF-8 ; passage automatique en ISO-8859-1 (Latin-1). "
+                               "Choisissez l’encodage exact dans le profil si des accents restent incorrects."))
                 text = raw.decode("latin-1")
             else:
-                self.report(f"Avertissement : certains noms ne sont pas valides en {self.ftp.encoding} ; "
-                            "ils sont affichés avec « � » et ne pourront pas être ouverts. Changez l’encodage du profil.")
+                self.report(tr("Avertissement : certains noms ne sont pas valides en {encoding} ; "
+                               "ils sont affichés avec « � » et ne pourront pas être ouverts. Changez l’encodage du profil.")
+                            .format(encoding=self.ftp.encoding))
                 text = raw.decode(self.ftp.encoding, errors="replace")
         return [line.rstrip("\r") for line in text.split("\n") if line.strip()]
 
@@ -239,7 +242,7 @@ class FTPClient(BaseClient):
             if str(error)[:3] not in ("500", "501", "502", "504"):
                 raise
             from smftp.core.listing import parse_listing
-            self.report("Statut : MLSD indisponible ; lecture de la liste avec LIST.")
+            self.report(tr("Statut : MLSD indisponible ; lecture de la liste avec LIST."))
             # Without -a, servers such as vsftpd hide names starting with ".":
             # .htaccess, and the hidden partial files of safe uploads.
             lines = None
@@ -266,8 +269,9 @@ class FTPClient(BaseClient):
             if skipped:
                 # Mirror synchronization must not take the missing names for deleted files.
                 self.incomplete_listing = True
-                self.report(f"Avertissement : {skipped} ligne(s) de la liste de {path or 'ce dossier'} n’ont pas pu être "
-                            "interprétées et ne sont pas affichées.")
+                self.report(tr("Avertissement : {count} ligne(s) de la liste de {path} n’ont pas pu être "
+                               "interprétées et ne sont pas affichées.").format(
+                    count=skipped, path=path or tr("ce dossier")))
             return entries
         rows = []
         for line in lines:
@@ -371,7 +375,8 @@ class FTPClient(BaseClient):
         if self.hash_method is None:
             self.hash_method = self.detect_hash()
             if self.hash_method:
-                self.report(f"Statut : empreinte serveur disponible ({self.hash_method[0]} {LABELS[self.hash_method[1]]}).")
+                self.report(tr("Statut : empreinte serveur disponible ({method}).").format(
+                    method=f"{self.hash_method[0]} {LABELS[self.hash_method[1]]}"))
         if not self.hash_method:
             return None
         command, algorithm = self.hash_method
@@ -453,10 +458,10 @@ class SFTPClient(BaseClient):
 
     def connect(self, connection: Connection) -> str:
         self.open_ssh(connection)
-        self.report("Statut : authentification SSH réussie ; ouverture du sous-système SFTP…")
+        self.report(tr("Statut : authentification SSH réussie ; ouverture du sous-système SFTP…"))
         self.sftp = self.ssh.open_sftp()
         self.sftp.get_channel().settimeout(connection.timeout)
-        self.report("Statut : sous-système SFTP ouvert ; lecture du dossier de départ…")
+        self.report(tr("Statut : sous-système SFTP ouvert ; lecture du dossier de départ…"))
         return self.sftp.normalize(".")
 
     def open_ssh(self, connection: Connection) -> None:
@@ -473,21 +478,22 @@ class SFTPClient(BaseClient):
         self.ssh.load_system_host_keys()
         self.ssh.load_host_keys(self.known_hosts)
         self.ssh.set_missing_host_key_policy(ConfirmHost())
-        self.report(f"Statut : résolution de {connection.host} et connexion SSH au port {connection.port}…")
+        self.report(tr("Statut : résolution de {host} et connexion SSH au port {port}…").format(
+            host=connection.host, port=connection.port))
         reporter = self.report
         class ReportingTransport(paramiko.Transport):
             def start_client(self, *args, **kwargs):
-                reporter("Statut : connexion TCP établie ; négociation SSH en cours…")
+                reporter(tr("Statut : connexion TCP établie ; négociation SSH en cours…"))
                 result = super().start_client(*args, **kwargs)
-                reporter("Statut : négociation SSH terminée ; vérification de la clé du serveur…")
+                reporter(tr("Statut : négociation SSH terminée ; vérification de la clé du serveur…"))
                 return result
 
             def auth_password(self, *args, **kwargs):
-                reporter("Statut : clé du serveur acceptée ; authentification SSH par mot de passe…")
+                reporter(tr("Statut : clé du serveur acceptée ; authentification SSH par mot de passe…"))
                 return super().auth_password(*args, **kwargs)
 
             def auth_publickey(self, *args, **kwargs):
-                reporter("Statut : clé du serveur acceptée ; authentification SSH par clé privée…")
+                reporter(tr("Statut : clé du serveur acceptée ; authentification SSH par clé privée…"))
                 return super().auth_publickey(*args, **kwargs)
 
         self.ssh.connect(connection.host, port=connection.port, username=connection.user,
@@ -559,7 +565,7 @@ class SFTPClient(BaseClient):
             digest = self.run_hash(command, algorithm, path)
             if digest:
                 if not self.hash_command:
-                    self.report(f"Statut : empreinte serveur disponible ({command.split()[0]}).")
+                    self.report(tr("Statut : empreinte serveur disponible ({method}).").format(method=command.split()[0]))
                 self.hash_command = (algorithm, command)
                 return algorithm, digest
         if not self.hash_command:
@@ -608,7 +614,7 @@ class ShellClient(SFTPClient):
 
     def connect(self, connection: Connection) -> str:
         self.open_ssh(connection)
-        self.report("Statut : authentification SSH réussie.")
+        self.report(tr("Statut : authentification SSH réussie."))
         return connection.remote_directory or "~"
 
     def open_shell(self, columns: int, lines: int):
@@ -619,7 +625,7 @@ class ShellClient(SFTPClient):
         return channel
 
     def listdir(self, path: str) -> list[Entry]:
-        raise NotImplementedError("Un profil SSH ouvre un terminal, pas l’explorateur de fichiers.")
+        raise NotImplementedError(tr("Un profil SSH ouvre un terminal, pas l’explorateur de fichiers."))
 
     def close(self) -> None:
         if hasattr(self, "ssh"):

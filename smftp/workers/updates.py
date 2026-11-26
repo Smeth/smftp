@@ -5,6 +5,7 @@ import urllib.error
 import urllib.request
 
 from PySide6.QtCore import QThread, Signal
+from smftp.i18n import tr
 
 
 CURRENT_VERSION = "1.1.0"
@@ -58,7 +59,7 @@ def fetch_latest_release():
     latest = parse_version(version_text)
     current = parse_version(CURRENT_VERSION)
     if latest is None or current is None:
-        raise ValueError("Version de release GitHub invalide")
+        raise ValueError(tr("Version de release GitHub invalide"))
     if latest > current:
         return {
             "status": "update",

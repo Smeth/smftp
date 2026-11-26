@@ -12,19 +12,16 @@ def main() -> None:
     app.setApplicationName("SMFTP")
     app.setOrganizationName("SMFTP")
     app.setWindowIcon(QIcon(str(Path(__file__).resolve().parent / "resources" / "sf-icon.png")))
-    from PySide6.QtCore import QTranslator, QLibraryInfo
-    translator = QTranslator(app)
-    local_translations = str(Path(__file__).resolve().parent / "resources" / "translations")
-    if (translator.load("qtbase_fr", local_translations) or
-        translator.load("qtbase_fr", QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath))):
-        app.installTranslator(translator)
+    # Interface language (Preferences; "auto" follows Windows): before any window is built.
+    from smftp import i18n
+    app.translators = i18n.install(app, "en" if "--lang=en" in sys.argv else "fr" if "--lang=fr" in sys.argv else None)
     from PySide6.QtWidgets import QMessageBox
     from smftp.utils.storage import acquire_instance_lock
     lock, available = acquire_instance_lock()
     if not available:
         from smftp.utils.storage import ask_running_instance_to_show
         if not ask_running_instance_to_show():
-            QMessageBox.information(None, "SMFTP", "SMFTP est déjà ouvert.\n\nUtilisez la fenêtre existante : deux instances écraseraient mutuellement les profils et la file de transferts.")
+            QMessageBox.information(None, "SMFTP", i18n.tr("SMFTP est déjà ouvert.\n\nUtilisez la fenêtre existante : deux instances écraseraient mutuellement les profils et la file de transferts."))
         sys.exit(0)
     logging_available = configure_logging()
     from smftp.utils.storage import clean_stale_temporary

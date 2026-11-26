@@ -9,6 +9,7 @@ from PySide6.QtCore import QThread, Signal
 from smftp.core.clients import ShellClient, UnknownHostError
 from smftp.core.errors import describe_error
 from smftp.utils.storage import data_dir
+from smftp.i18n import tr
 
 
 class ShellWorker(QThread):
@@ -38,7 +39,7 @@ class ShellWorker(QThread):
             self.client.connect(connection)
             if self.stopping:
                 return
-            self.status.emit("Statut : ouverture du terminal interactif…")
+            self.status.emit(tr("Statut : ouverture du terminal interactif…"))
             with self.lock:
                 self.channel = self.client.open_shell(*self.size)
             self.opened.emit()
@@ -50,11 +51,11 @@ class ShellWorker(QThread):
                     break
                 self.output.emit(data)
         except UnknownHostError as error:
-            self.status.emit("Statut : clé SSH inconnue ; confirmation de l’empreinte nécessaire.")
+            self.status.emit(tr("Statut : clé SSH inconnue ; confirmation de l’empreinte nécessaire."))
             self.host_unknown.emit(error)
         except Exception as error:
             if not self.stopping:
-                self.failed.emit(describe_error(error, connection, "Terminal SSH"))
+                self.failed.emit(describe_error(error, connection, tr("Terminal SSH")))
         finally:
             self.release()
             self.closed.emit()

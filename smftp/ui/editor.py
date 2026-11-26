@@ -280,7 +280,7 @@ class Editor(QDialog):
     def update_status(self):
         cursor = self.text.textCursor()
         self.status.setText(self.tr("Ligne %s, colonne %s") % (cursor.blockNumber() + 1, cursor.positionInBlock() + 1)
-                            + f"    {ENCODING_LABELS.get(self.encoding, self.encoding)}{' avec BOM' if self.bom else ''}"
+                            + f"    {ENCODING_LABELS.get(self.encoding, self.encoding)}{self.tr(' avec BOM') if self.bom else ''}"
                             f" · {self.NEWLINES[self.newline]}")
 
     # ---------- state ----------

@@ -7,6 +7,7 @@ from smftp.utils.storage import data_dir
 from smftp.utils.profiles import profile_for, normalize_profile
 from smftp.models.entries import Connection
 from smftp.workers.transfer import Transfer
+from smftp.i18n import tr
 
 
 # Same limits for writing and reading: a queue that was saved can always be restored.
@@ -16,7 +17,7 @@ MAX_BYTES = 200_000_000
 
 def write_queue(tasks: list[Transfer]) -> None:
     if len(tasks) > MAX_TASKS:
-        raise ValueError("File de transferts trop longue pour être conservée.")
+        raise ValueError(tr("File de transferts trop longue pour être conservée."))
     rows = [dict(profile=profile_for(t.connection), local=t.local, remote=t.remote,
                  upload=t.upload, directory=t.directory, conflict=t.conflict,
                  safe_upload=t.safe_upload, completed=dict(t.completed)) for t in tasks]
@@ -53,17 +54,17 @@ def read_queue() -> list[Transfer]:
     if not path.exists():
         return []
     if path.stat().st_size > MAX_BYTES:
-        raise ValueError("File de transferts trop volumineuse.")
+        raise ValueError(tr("File de transferts trop volumineuse."))
     rows = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(rows, list) or len(rows) > MAX_TASKS:
-        raise ValueError("File de transferts invalide.")
+        raise ValueError(tr("File de transferts invalide."))
     tasks = []
     for row in rows:
         if not isinstance(row, dict) or not isinstance(row.get("upload"), bool) or not isinstance(row.get("directory", False), bool):
-            raise ValueError("Description de transfert invalide.")
+            raise ValueError(tr("Description de transfert invalide."))
         profile = Connection(**normalize_profile(row["profile"]))
         if not all(isinstance(row.get(k), str) for k in ("local", "remote")):
-            raise ValueError("Chemin de transfert invalide.")
+            raise ValueError(tr("Chemin de transfert invalide."))
         conflict = row.get("conflict", "ask")
         if conflict not in ("ask", "skip", "rename", "overwrite", "newer", "different", "resume"):
             conflict = "ask"

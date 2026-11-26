@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QWidget, QFrame, QVBoxLayout, QHBoxLayout, QFormL
                                QCheckBox, QMenu)
 from smftp.core import assistant as A
 from smftp.core import schedule as S
+from smftp.i18n import tr
 from smftp.ui.icons import icon_button, make_icon, recolor, theme_of
 
 KEY_SERVICE, KEY_NAME = "SMFTP", "assistant:anthropic-api-key"
@@ -106,11 +107,13 @@ class Toolbox(QObject):
             QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
 
     def task_text(self, task):
-        lines = [S.summary(task), S.describe(task), f"Serveur : {self.scheduler.profile_label(task['profile'])}"]
+        lines = [S.summary(task), S.describe(task),
+                 self.tr("Serveur : {server}").format(server=self.scheduler.profile_label(task['profile']))]
         if task["kind"] != "sync":
-            lines.append(f"Si la destination existe : {S.CONFLICTS[task['conflict']].lower()}")
+            lines.append(self.tr("Si la destination existe : {choice}").format(
+                choice=self.tr(S.CONFLICTS[task['conflict']]).lower()))
         if not task["enabled"]:
-            lines.append("Tâche désactivée")
+            lines.append(self.tr("Tâche désactivée"))
         return "\n".join(lines)
 
     # ----- read-only tools -----
@@ -167,7 +170,7 @@ class Toolbox(QObject):
                              "pour vérifier son empreinte.") from None
         except Exception as error:
             from smftp.core.errors import describe_error
-            raise ValueError(describe_error(error, connection, "Lecture du dossier distant").summary) from None
+            raise ValueError(describe_error(error, connection, self.tr("Lecture du dossier distant")).summary) from None
         finally:
             try:
                 client.close()
@@ -222,7 +225,8 @@ class Toolbox(QObject):
         task["profile"] = self.profile_key(data.get("profile", ""))
         clean = S.normalize_task(task, list(self.scheduler.profiles()))
         self.scheduler.check_once_in_future(clean)
-        if not self.confirm(f"Créer la tâche planifiée « {clean['name']} » ?", self.task_text(clean)):
+        if not self.confirm(self.tr("Créer la tâche planifiée « {name} » ?").format(name=clean['name']),
+                            self.task_text(clean)):
             return "L’utilisateur a refusé de créer cette tâche."
         created = self.scheduler.add_task(task)
         return (f"Tâche créée (task_id {created['id']}). Prochaine exécution : {created['next_run'] or 'aucune'}. "
@@ -237,8 +241,9 @@ class Toolbox(QObject):
         self.refuse_network_path(task.get("local", ""))
         task["profile"] = self.profile_key(data.get("profile", ""))
         clean = S.normalize_task(dict(task, id=task_id), list(self.scheduler.profiles()))
-        if not self.confirm(f"Modifier la tâche « {current['name']} » ?",
-                            "Avant :\n" + self.task_text(current) + "\n\nAprès :\n" + self.task_text(clean)):
+        if not self.confirm(self.tr("Modifier la tâche « {name} » ?").format(name=current['name']),
+                            self.tr("Avant :") + "\n" + self.task_text(current) + "\n\n" + self.tr("Après :") + "\n"
+                            + self.task_text(clean)):
             return "L’utilisateur a refusé cette modification."
         updated = self.scheduler.update_task(task_id, task)
         return f"Tâche modifiée. Prochaine exécution : {updated['next_run'] or 'aucune'}."
@@ -247,8 +252,8 @@ class Toolbox(QObject):
         task = self.scheduler.store.find(task_id)
         if task is None:
             raise ValueError("Tâche introuvable.")
-        if not self.confirm(f"Supprimer la tâche « {task['name']} » ?",
-                            self.task_text(task) + "\n\nAucun fichier n’est supprimé."):
+        if not self.confirm(self.tr("Supprimer la tâche « {name} » ?").format(name=task['name']),
+                            self.task_text(task) + "\n\n" + self.tr("Aucun fichier n’est supprimé.")):
             return "L’utilisateur a refusé la suppression."
         self.scheduler.remove_task(task_id)
         return "Tâche supprimée."
@@ -257,7 +262,8 @@ class Toolbox(QObject):
         task = self.scheduler.store.find(task_id)
         if task is None:
             raise ValueError("Tâche introuvable.")
-        if not self.confirm(f"Lancer maintenant la tâche « {task['name']} » ?", self.task_text(task)):
+        if not self.confirm(self.tr("Lancer maintenant la tâche « {name} » ?").format(name=task['name']),
+                            self.task_text(task)):
             return "L’utilisateur a refusé de lancer la tâche."
         self.scheduler.run_now(task_id)
         row = self.scheduler.store.history[-1]
@@ -272,9 +278,10 @@ class Toolbox(QObject):
             raise ValueError("Chemins complets attendus (local absolu, distant commençant par /).")
         connection = self.scheduler.connection_for({"profile": key})
         label = self.scheduler.profile_label(key)
-        text = (f"Envoyer {local} → {remote}" if upload else f"Télécharger {remote} → {local}") + f"\nServeur : {label}"
+        text = (self.tr("Envoyer {local} → {remote}") if upload else self.tr("Télécharger {remote} → {local}")).format(
+            local=local, remote=remote) + "\n" + self.tr("Serveur : {server}").format(server=label)
         # The disk is read only once the user has approved the paths.
-        if not self.confirm("Ajouter ce transfert à la file ?", text):
+        if not self.confirm(self.tr("Ajouter ce transfert à la file ?"), text):
             return "L’utilisateur a refusé ce transfert."
         if upload and not Path(local).exists():
             raise ValueError(f"Chemin local introuvable : {local}")
@@ -317,20 +324,20 @@ class AssistantWorker(QThread):
         try:
             import anthropic
         except ImportError:
-            return f"Erreur inattendue de l’assistant : {error}", False
+            return tr("Erreur inattendue de l’assistant : {error}").format(error=error), False
         if isinstance(error, anthropic.AuthenticationError):
-            return "Clé API refusée. Vérifiez-la dans les réglages de l’assistant.", True
+            return tr("Clé API refusée. Vérifiez-la dans les réglages de l’assistant."), True
         if isinstance(error, anthropic.PermissionDeniedError):
-            return "Cette clé API n’a pas accès au modèle choisi.", True
+            return tr("Cette clé API n’a pas accès au modèle choisi."), True
         if isinstance(error, anthropic.NotFoundError):
-            return "Modèle introuvable pour cette clé API : choisissez-en un autre dans les réglages.", True
+            return tr("Modèle introuvable pour cette clé API : choisissez-en un autre dans les réglages."), True
         if isinstance(error, anthropic.RateLimitError):
-            return "Trop de demandes pour le moment : réessayez dans une minute.", False
+            return tr("Trop de demandes pour le moment : réessayez dans une minute."), False
         if isinstance(error, anthropic.APIConnectionError):
-            return "Impossible de joindre le service Claude : vérifiez la connexion Internet.", False
+            return tr("Impossible de joindre le service Claude : vérifiez la connexion Internet."), False
         if isinstance(error, anthropic.APIStatusError):
-            return f"Le service Claude a renvoyé une erreur ({error.status_code}). Réessayez plus tard.", False
-        return f"Erreur inattendue de l’assistant : {error}", False
+            return tr("Le service Claude a renvoyé une erreur ({code}). Réessayez plus tard.").format(code=error.status_code), False
+        return tr("Erreur inattendue de l’assistant : {error}").format(error=error), False
 
 
 # ------------------------------------------------------------------ settings
@@ -349,11 +356,14 @@ def provider_settings(settings):
 
 def provider_label(config):
     if config["provider"] == "ollama":
-        where = "local" if A.is_local_url(config["ollama_url"]) else "serveur distant"
-        return f"Ollama · {config['ollama_model'] or 'aucun modèle'} · {where}"
-    label = A.CLAUDE_MODELS.get(config["claude_model"], config["claude_model"]).split(" — ")[0]
+        where = tr("local") if A.is_local_url(config["ollama_url"]) else tr("serveur distant")
+        return f"Ollama · {config['ollama_model'] or tr('aucun modèle')} · {where}"
+    label = config["claude_model"]
+    if label in A.CLAUDE_MODELS:
+        label = tr(A.CLAUDE_MODELS[label])
+    label = label.split(" — ")[0]
     if config["fast"] and config["claude_model"] in A.FAST_MODELS:
-        label += " · rapide"
+        label += " · " + tr("rapide")
     return label
 
 
@@ -401,7 +411,7 @@ class AssistantSettings(QDialog):
         form.setContentsMargins(24, 4, 0, 0)
         self.claude_model = QComboBox()
         for value, label in A.CLAUDE_MODELS.items():
-            self.claude_model.addItem(label, value)
+            self.claude_model.addItem(self.tr(label), value)
         self.claude_model.setCurrentIndex(max(0, self.claude_model.findData(config["claude_model"])))
         form.addRow(self.tr("Modèle"), self.claude_model)
         self.effort = QComboBox()
@@ -662,7 +672,8 @@ class Steps(QWidget):
 
     def set_progress(self, characters):
         # Local models can think for minutes: show that work is going on.
-        self.progress_text = f"   {characters:,} caractères".replace(",", " ")
+        count = f"{characters:,}".replace(",", " ")
+        self.progress_text = "   " + self.tr("{count} caractères").format(count=count)
 
     def add(self, label):
         if self.lines:
@@ -889,7 +900,7 @@ class AssistantPanel(QFrame):
         title = menu.addAction(self.tr("Claude (en ligne)"))
         title.setEnabled(False)
         for value, label in A.CLAUDE_MODELS.items():
-            name, _, detail = label.partition(" — ")
+            name, _, detail = self.tr(label).partition(" — ")
             action = menu.addAction(f"{name}  —  {detail}")
             action.setCheckable(True)
             action.setChecked(config["provider"] == "claude" and config["claude_model"] == value)

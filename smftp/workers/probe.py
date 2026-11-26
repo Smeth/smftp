@@ -8,6 +8,7 @@ from PySide6.QtCore import QThread, Signal
 from smftp.core.clients import make_client, UnknownHostError
 from smftp.core.errors import describe_error
 from smftp.utils.storage import data_dir
+from smftp.i18n import tr
 
 # Probes still running when their dialog closed: kept alive until they finish,
 # so that closing the dialog never waits on a slow network timeout.
@@ -35,26 +36,26 @@ class ConnectionProbe(QThread):
             client = make_client(connection.protocol, str(hosts), self.step.emit)
             home = client.connect(connection)
             if connection.protocol == "SSH":
-                self.succeeded.emit("Connexion SSH réussie : serveur vérifié et authentification acceptée.")
+                self.succeeded.emit(tr("Connexion SSH réussie : serveur vérifié et authentification acceptée."))
                 return
             phase = "list"
             path = connection.remote_directory or home
             entries = client.listdir(path)
-            summary = f"Connexion réussie : {len(entries)} élément(s) dans {path}."
+            summary = tr("Connexion réussie : {count} élément(s) dans {path}.").format(count=len(entries), path=path)
             if connection.protocol != "SFTP":
-                summary += " Mode " + ("passif." if connection.passive else "actif.")
+                summary += " " + (tr("Mode passif.") if connection.passive else tr("Mode actif."))
             self.succeeded.emit(summary)
         except UnknownHostError as error:
             self.host_unknown.emit(error)
         except Exception as error:
-            info = describe_error(error, connection, "Test de connexion")
+            info = describe_error(error, connection, tr("Test de connexion"))
             if phase == "list" and connection.protocol != "SFTP":
                 from dataclasses import replace
-                other = "actif" if connection.passive else "passif"
+                other = tr("actif") if connection.passive else tr("passif")
                 info = replace(info, details=(
-                    f"L’authentification a réussi mais la lecture du dossier a échoué. Si le dossier existe, "
-                    f"le canal de données est sans doute bloqué : essayez le mode {other} "
-                    f"(Options avancées → Mode de transfert).\n\n" + info.details))
+                    tr("L’authentification a réussi mais la lecture du dossier a échoué. Si le dossier existe, "
+                       "le canal de données est sans doute bloqué : essayez le mode {mode} "
+                       "(Options avancées → Mode de transfert).").format(mode=other) + "\n\n" + info.details))
             self.failed.emit(info)
         finally:
             if client is not None:

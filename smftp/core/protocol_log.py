@@ -1,6 +1,7 @@
 """FTP protocol tracing without ftplib debug output or credential disclosure."""
 import ftplib
 import ssl
+from smftp.i18n import tr
 
 
 class FTPTrace:
@@ -13,22 +14,23 @@ class FTPTrace:
     def putcmd(self, line: str) -> None:
         command = line.split(" ", 1)[0].upper()
         safe = f"{command} [masqué]" if command in ("PASS", "ACCT", "ADAT") else line
-        self.emit_trace("Commande : " + safe)
+        # The command itself is protocol text: only the prefix is translated.
+        self.emit_trace(tr("Commande : {command}").format(command=safe))
         super().putcmd(line)
 
     def getresp(self) -> str:
         try:
             response = super().getresp()
         except (ftplib.error_reply, ftplib.error_temp, ftplib.error_perm, ftplib.error_proto) as error:
-            self.emit_trace("Réponse : " + str(error))
+            self.emit_trace(tr("Réponse : {response}").format(response=error))
             raise
-        self.emit_trace("Réponse : " + response)
+        self.emit_trace(tr("Réponse : {response}").format(response=response))
         return response
 
     def auth(self):
-        self.emit_trace("Statut : négociation TLS et vérification du certificat…")
+        self.emit_trace(tr("Statut : négociation TLS et vérification du certificat…"))
         response = super().auth()
-        self.emit_trace("Statut : connexion TLS établie, certificat vérifié.")
+        self.emit_trace(tr("Statut : connexion TLS établie, certificat vérifié."))
         return response
 
 
@@ -74,7 +76,7 @@ class ImplicitFTP_TLS(SessionReuse, ftplib.FTP_TLS):
 
 class LoggedImplicitFTPS(FTPTrace, ImplicitFTP_TLS):
     def connect(self, *args, **kwargs):
-        self.emit_trace("Statut : FTPS implicite — négociation TLS et vérification du certificat dès la connexion…")
+        self.emit_trace(tr("Statut : FTPS implicite — négociation TLS et vérification du certificat dès la connexion…"))
         response = super().connect(*args, **kwargs)
-        self.emit_trace("Statut : connexion TLS établie, certificat vérifié.")
+        self.emit_trace(tr("Statut : connexion TLS établie, certificat vérifié."))
         return response
