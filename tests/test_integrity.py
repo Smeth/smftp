@@ -358,6 +358,8 @@ def test_ftps_end_to_end_with_certificate_check(tmp_path, certificate, monkeypat
     try:
         client.connect(connection(port, protocol))
         assert "hello.txt" in {e.name for e in client.listdir("/")}
+        # Servers such as vsftpd (require_ssl_reuse) refuse a data connection without it.
+        assert client.ftp.last_data_session_reused is True
         assert client.checksum("/hello.txt")[1] == hashlib.sha256(b"hello").hexdigest()
     finally:
         client.close()

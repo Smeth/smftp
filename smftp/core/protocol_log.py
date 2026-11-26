@@ -36,11 +36,28 @@ class LoggedFTP(FTPTrace, ftplib.FTP):
     pass
 
 
-class LoggedFTPS(FTPTrace, ftplib.FTP_TLS):
+class SessionReuse:
+    """Data connections resume the TLS session of the control connection.
+
+    Many servers require it so that nobody else can take over a data
+    connection: vsftpd (require_ssl_reuse, on by default), FileZilla Server,
+    ProFTPD with TLSOptions RequireSessionReuse. ftplib starts a new session.
+    """
+    last_data_session_reused = None  # For diagnostics and tests.
+
+    def ntransfercmd(self, cmd, rest=None):
+        conn, size = ftplib.FTP.ntransfercmd(self, cmd, rest)
+        if self._prot_p:
+            conn = self.context.wrap_socket(conn, server_hostname=self.host, session=self.sock.session)
+            self.last_data_session_reused = conn.session_reused
+        return conn, size
+
+
+class LoggedFTPS(FTPTrace, SessionReuse, ftplib.FTP_TLS):
     pass
 
 
-class ImplicitFTP_TLS(ftplib.FTP_TLS):
+class ImplicitFTP_TLS(SessionReuse, ftplib.FTP_TLS):
     """Wraps the control socket as soon as it is connected (implicit FTPS)."""
     _sock = None
 

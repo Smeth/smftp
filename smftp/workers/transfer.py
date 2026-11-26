@@ -153,8 +153,9 @@ class TransferWorker(QThread):
         self.checkpoint()
         total = 0
         if self.task.upload:
+            from smftp.workers.sync import is_junction
             for child in local.iterdir():
-                if child.is_symlink():
+                if child.is_symlink() or is_junction(child):
                     continue
                 if child.is_dir():
                     total += self.measure(client, child, posixpath.join(remote, child.name))
@@ -177,9 +178,9 @@ class TransferWorker(QThread):
     def copy(self, client, local: Path, remote: str, directory: bool):
         self.checkpoint()
         if local.is_symlink():
-            raise ValueError("Symbolic links are not followed")
+            raise ValueError("Les liens symboliques ne sont pas suivis : choisissez directement le fichier ou le dossier cible.")
         if not self.task.upload and any(parent.is_symlink() for parent in local.parents):
-            raise ValueError("Destination symlink is not followed")
+            raise ValueError("Le dossier de destination passe par un lien symbolique, qui n’est pas suivi par sécurité.")
         if directory:
             if self.total_bytes is None:
                 # Progress covers the whole task, not only the current file.
@@ -192,6 +193,11 @@ class TransferWorker(QThread):
                 if not existing:
                     client.mkdir(remote)
                 for child in local.iterdir():
+                    from smftp.workers.sync import is_junction
+                    if child.is_symlink() or is_junction(child):
+                        # Their target may lie outside the folder: skipped, not fatal.
+                        self.report_activity(f"Statut : lien symbolique ou jonction ignoré : {child}")
+                        continue
                     self.copy(client, child, posixpath.join(remote, child.name), child.is_dir())
             else:
                 local.mkdir(parents=True, exist_ok=True)

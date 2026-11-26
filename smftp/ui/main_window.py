@@ -919,6 +919,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
                 deletions = []
                 self.log(self.tr("Synchronisation : suppressions annulées ; seules les copies sont lancées."))
+        copies = set()  # id() of the copy tasks queued for this plan.
         for path, state, _, expected in selected:
             if state in DELETIONS:
                 continue
@@ -930,16 +931,47 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             except ValueError as error:
                 self.on_error(str(error))
                 return
-            self.transfers.add(Transfer(connection, str(destination), posixpath.join(remote, path), upload,
-                                        conflict="ask", planned=True, expected=expected))
+            task = Transfer(connection, str(destination), posixpath.join(remote, path), upload,
+                            conflict="ask", planned=True, expected=expected)
+            if self.transfers.add(task) is not None:
+                copies.add(id(task))
         if deletions:
-            from smftp.workers.sync import SyncDeleter
+            self.delete_after_copies(copies, connection, local, remote, upload, deletions)
+
+    def delete_after_copies(self, copies, connection, local, remote, upload, deletions):
+        """Mirror deletions start once every copy of the same plan has finished: on a
+        case-insensitive destination a deletion running alongside could remove a file
+        that a copy has just written under another case."""
+        from smftp.workers.sync import SyncDeleter
+
+        def start():
             self.sync_deleter = SyncDeleter(connection, local, remote, upload, deletions, self)
             self.sync_deleter.report.connect(self.log)
             self.sync_deleter.done.connect(lambda deleted, kept: (
                 self.log(self.tr("Synchronisation miroir : %1 supprimé(s), %2 conservé(s).").replace("%1", str(deleted)).replace("%2", str(kept))),
                 self.refresh()))
             self.sync_deleter.start()
+
+        if not copies:
+            start()
+            return
+        self.log(self.tr("Synchronisation miroir : les suppressions auront lieu une fois les copies terminées."))
+        cancelled = []
+
+        def finished(task, status):
+            if id(task) not in copies:
+                return
+            copies.discard(id(task))
+            if status == "Annulé":
+                cancelled.append(task)
+            if copies:
+                return
+            self.transfers.outcome.disconnect(finished)
+            if cancelled:
+                self.log(self.tr("Synchronisation miroir : copies annulées ; aucune suppression n’a été faite."))
+            else:
+                start()
+        self.transfers.outcome.connect(finished)
 
     def edit_remote(self, external=False):
         import tempfile

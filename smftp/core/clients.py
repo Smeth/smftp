@@ -119,6 +119,8 @@ class FTPClient(BaseClient):
     auto_encoding = True
     identity = ""
     list_all = None  # LIST -a: None = not tried yet, then True or False.
+    hides_dotfiles = False  # True once a plain LIST was used (dotfiles may be missing).
+    incomplete_listing = False  # True once LIST lines could not be understood.
 
     def exists(self, path: str) -> Entry | None:
         found = super().exists(path)
@@ -222,7 +224,7 @@ class FTPClient(BaseClient):
         except ftplib.error_perm as error:
             if str(error)[:3] not in ("500", "501", "502", "504"):
                 raise
-            from smftp.core.listing import parse_list_line
+            from smftp.core.listing import parse_listing
             self.report("Statut : MLSD indisponible ; lecture de la liste avec LIST.")
             # Without -a, servers such as vsftpd hide names starting with ".":
             # .htaccess, and the hidden partial files of safe uploads.
@@ -243,7 +245,16 @@ class FTPClient(BaseClient):
                         self.list_all = True
             if lines is None:
                 lines = self.read_lines(f"LIST {path}" if path else "LIST")
-            return [entry for line in lines if (entry := parse_list_line(line)) is not None and entry.name not in (".", "..")]
+                # This listing may leave out names starting with ".": mirror
+                # synchronization must not take them for missing files.
+                self.hides_dotfiles = True
+            entries, skipped = parse_listing(lines)
+            if skipped:
+                # Mirror synchronization must not take the missing names for deleted files.
+                self.incomplete_listing = True
+                self.report(f"Avertissement : {skipped} ligne(s) de la liste de {path or 'ce dossier'} n’ont pas pu être "
+                            "interprétées et ne sont pas affichées.")
+            return entries
         rows = []
         for line in lines:
             found, _, name = line.partition(" ")
@@ -253,12 +264,27 @@ class FTPClient(BaseClient):
                 facts[key.lower()] = value
             rows.append((name, facts))
         for name, facts in rows:
-            if facts.get("type") in ("cdir", "pdir"):
+            kind = facts.get("type", "").lower()
+            if kind in ("cdir", "pdir"):
                 continue
+            # A malformed fact costs that value only, not the whole folder.
             modified = 0.0
-            if facts.get("modify"):
-                modified = datetime.strptime(facts["modify"].split(".")[0], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp()
-            entries.append(Entry(name, facts.get("type") == "dir", int(facts.get("size", 0)), modified, facts.get("unix.mode", facts.get("perm", ""))))
+            try:
+                if facts.get("modify"):
+                    modified = datetime.strptime(facts["modify"].split(".")[0], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp()
+            except ValueError:
+                pass
+            try:
+                size = int(facts.get("size", 0))
+            except ValueError:
+                size = 0
+            permissions = facts.get("unix.mode", facts.get("perm", ""))
+            if kind.startswith(("os.unix=slink", "os.unix=symlink")):
+                # Symbolic link (Pure-FTPd, ProFTPD): never followed nor counted as a file.
+                permissions = "l" + permissions
+                entries.append(Entry(name, False, 0, modified, permissions))
+                continue
+            entries.append(Entry(name, kind == "dir", size, modified, permissions))
         return entries
 
     def close(self) -> None:
