@@ -101,6 +101,8 @@ class ConnectionDialog(QDialog):
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
         self.password.setPlaceholderText(self.tr("Facultatif si vous utilisez une clé SSH"))
+        self.password.setToolTip(self.tr("Sans clé SSH : mot de passe du compte.\n"
+                                         "Avec une clé SSH : phrase secrète de la clé (jamais envoyée au serveur)."))
         # Show / hide sits inside the field, like in a browser.
         self.show_password = QAction(self.password)
         self.show_password.setCheckable(True)

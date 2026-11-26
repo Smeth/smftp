@@ -61,3 +61,14 @@ def mark_from_internet(path: str | Path) -> None:
             stream.write("[ZoneTransfer]\r\nZoneId=3\r\n")
     except OSError:
         pass
+
+
+def is_network_path(path: str) -> bool:
+    r"""UNC and device paths (\\server\share, //server/share, \\?\..., \\.\...).
+
+    Merely checking whether such a path exists makes Windows contact the server
+    and send the user's NTLM credentials: never touch one that came from an
+    untrusted source (an AI model, an imported file).
+    """
+    text = str(path or "").strip()
+    return len(text) >= 2 and text[0] in "\\/" and text[1] in "\\/"

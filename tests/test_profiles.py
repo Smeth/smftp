@@ -27,7 +27,11 @@ def test_filezilla_import_nested_passwords_and_unsupported(tmp_path):
     assert result.profiles[0]["key_file"] == "/keys/id_ed25519"
     assert result.passwords[identity(result.profiles[0])] == "sëcret"
     assert result.passwords[identity(result.profiles[1])] == "plain-secret"
-    assert len(result.warnings) == 3
+    # Encrypted password, unsupported S3, invalid port, and "TLS if available" now imposed.
+    assert len(result.warnings) == 4
+    encrypted = next(site for site in result.profiles if site["host"] == "encrypted.test")
+    assert encrypted["protocol"] == "FTPS"
+    assert any("encrypted.test" in w and "TLS" in w for w in result.warnings)
     assert all("password" not in site for site in result.profiles)
     assert "sëcret" not in repr(result)
 
@@ -110,7 +114,7 @@ ftp.exemple.fr</Server></Servers></FileZilla3>'''
 def test_header_repair_does_not_modify_document_values(tmp_path):
     path = tmp_path / "sites.xml"
     path.write_text('''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<FileZilla3><Servers><Server><Host>test.local</Host><User>alice</User>
+<FileZilla3><Servers><Server><Host>test.local</Host><Protocol>4</Protocol><User>alice</User>
 <Pass>standalone="true"</Pass></Server></Servers></FileZilla3>''', encoding="utf-8")
     result = read_profiles(str(path))
     assert not result.warnings

@@ -441,9 +441,11 @@ class SFTPClient(BaseClient):
                 return super().auth_publickey(*args, **kwargs)
 
         self.ssh.connect(connection.host, port=connection.port, username=connection.user,
-                         password=connection.password or None,
+                         # With a key file the secret is its passphrase: it must never be offered
+                         # to the server as a password if the key is refused.
+                         password=None if connection.key_file else (connection.password or None),
                          key_filename=connection.key_file or None,
-                         passphrase=connection.password or None,
+                         passphrase=(connection.password or None) if connection.key_file else None,
                          timeout=connection.timeout, auth_timeout=connection.timeout,
                          banner_timeout=connection.timeout, channel_timeout=connection.timeout,
                          look_for_keys=False, allow_agent=False, transport_factory=ReportingTransport)

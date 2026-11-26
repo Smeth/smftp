@@ -151,6 +151,19 @@ def repair_xml_header(data: bytes) -> tuple[bytes, list[str]]:
     return (header + text[declaration.end():]).encode(encoding), repairs
 
 
+def drop_network_paths(site: dict, label: str, result: "ImportResult") -> dict:
+    """An imported file may come from someone else: a network path in it would make
+    Windows authenticate to that server as soon as the profile is used."""
+    from smftp.utils.paths import is_network_path
+    fields = {"local_directory": "dossier local de départ", "key_file": "clé SSH"}
+    for field, description in fields.items():
+        if is_network_path(site.get(field, "")):
+            result.warnings.append(f"{label} : {description} sur un chemin réseau ({site[field]}) non importé(e) ; "
+                                   "choisissez-le dans Modifier si vous lui faites confiance.")
+            site[field] = ""
+    return site
+
+
 def read_profiles(filename: str, *, repair_header: bool = False) -> ImportResult:
     path = Path(filename)
     if path.stat().st_size > 10 * 1024 * 1024:
@@ -162,7 +175,7 @@ def read_profiles(filename: str, *, repair_header: bool = False) -> ImportResult
             raise ValueError("Le fichier JSON doit contenir une liste de profils.")
         for site in sites:
             clean = normalize_profile(site)
-            result.profiles.append(clean)
+            result.profiles.append(drop_network_paths(clean, clean.get("name") or clean["host"], result))
         return result
     data = path.read_bytes()
     # Reject declarations even for UTF-16/32 documents (ElementTree accepts them).
@@ -192,9 +205,16 @@ def read_profiles(filename: str, *, repair_header: bool = False) -> ImportResult
     parents = {child: parent for parent in root.iter() for child in parent}
     for number, server in enumerate(servers, 1):
         label = server.findtext("Name") or server.findtext("Host") or f"Serveur {number}"
-        protocol = {"0": "FTP", "1": "SFTP", "3": "FTPSI", "4": "FTPS"}.get(server.findtext("Protocol", "0"))
+        # FileZilla: 0 = FTP with explicit TLS when available, 6 = plain FTP only.
+        code = (server.findtext("Protocol", "0") or "0").strip()
+        protocol = {"0": "FTPS", "1": "SFTP", "3": "FTPSI", "4": "FTPS", "6": "FTP"}.get(code)
+        protocol_note = {
+            "0": f"{label} : FileZilla utilisait TLS « si disponible » ; SMFTP l’impose (FTPS explicite). "
+                 "Si le serveur ne propose pas TLS, choisissez FTP dans Modifier : la connexion ne sera pas chiffrée.",
+            "6": f"{label} : FTP non chiffré, comme dans FileZilla : mot de passe et fichiers circulent en clair.",
+        }.get(code)
         if not protocol:
-            result.warnings.append(f"{label} : protocole FileZilla non pris en charge (FTP non sécurisé imposé, stockage cloud, etc.).")
+            result.warnings.append(f"{label} : protocole FileZilla non pris en charge (stockage cloud, etc.).")
             continue
         logon = server.findtext("Logontype", "1")
         user = server.findtext("User", "")
@@ -223,7 +243,9 @@ def read_profiles(filename: str, *, repair_header: bool = False) -> ImportResult
         except (ValueError, TypeError):
             result.warnings.append(f"{label} : hôte, utilisateur ou port invalide ; profil ignoré.")
             continue
-        result.profiles.append(site)
+        result.profiles.append(drop_network_paths(site, label, result))
+        if protocol_note:
+            result.warnings.append(protocol_note)
         ignored = ignored_filezilla_options(server)
         if ignored:
             result.warnings.append(f"{label} : options FileZilla non reprises : " + ", ".join(ignored) + ".")

@@ -124,7 +124,19 @@ class Toolbox(QObject):
                          "dossier_distant_par_defaut": site.get("remote_directory", "")})
         return json.dumps(rows, ensure_ascii=False) if rows else "Aucun profil enregistré."
 
+    @staticmethod
+    def refuse_network_path(*paths):
+        """Paths come from the model, which may follow text planted in a file name or a
+        server banner: a \\\\server\\share path would make Windows contact that server
+        with the user's credentials, so it is refused before any disk access."""
+        from smftp.utils.paths import is_network_path
+        for path in paths:
+            if is_network_path(path):
+                raise ValueError("Chemins réseau (\\\\serveur\\partage) refusés pour l’assistant : "
+                                 "utilisez un dossier de ce PC ou un lecteur réseau mappé (Z:\\…).")
+
     def tool_list_local_directory(self, path):
+        self.refuse_network_path(path)
         folder = Path(path)
         if not folder.is_absolute() or not folder.is_dir():
             raise ValueError(f"Dossier local introuvable : {path}")
@@ -206,6 +218,7 @@ class Toolbox(QObject):
     # ----- actions (confirmed) -----
     def tool_create_scheduled_task(self, **data):
         task = A.task_from_tool(data)
+        self.refuse_network_path(task.get("local", ""))
         task["profile"] = self.profile_key(data.get("profile", ""))
         clean = S.normalize_task(task, list(self.scheduler.profiles()))
         self.scheduler.check_once_in_future(clean)
@@ -221,6 +234,7 @@ class Toolbox(QObject):
         if current is None:
             raise ValueError("Tâche introuvable : appelez list_scheduled_tasks pour obtenir les identifiants.")
         task = A.task_from_tool(data)
+        self.refuse_network_path(task.get("local", ""))
         task["profile"] = self.profile_key(data.get("profile", ""))
         clean = S.normalize_task(dict(task, id=task_id), list(self.scheduler.profiles()))
         if not self.confirm(f"Modifier la tâche « {current['name']} » ?",
@@ -253,17 +267,19 @@ class Toolbox(QObject):
         from smftp.workers.transfer import Transfer
         upload = direction != "telecharger"
         key = self.profile_key(profile)
+        self.refuse_network_path(local)
         if not Path(local).is_absolute() or not remote.startswith("/"):
             raise ValueError("Chemins complets attendus (local absolu, distant commençant par /).")
+        connection = self.scheduler.connection_for({"profile": key})
+        label = self.scheduler.profile_label(key)
+        text = (f"Envoyer {local} → {remote}" if upload else f"Télécharger {remote} → {local}") + f"\nServeur : {label}"
+        # The disk is read only once the user has approved the paths.
+        if not self.confirm("Ajouter ce transfert à la file ?", text):
+            return "L’utilisateur a refusé ce transfert."
         if upload and not Path(local).exists():
             raise ValueError(f"Chemin local introuvable : {local}")
         if not upload and not Path(local).parent.is_dir():
             raise ValueError(f"Dossier local introuvable : {Path(local).parent}")
-        connection = self.scheduler.connection_for({"profile": key})
-        label = self.scheduler.profile_label(key)
-        text = (f"Envoyer {local} → {remote}" if upload else f"Télécharger {remote} → {local}") + f"\nServeur : {label}"
-        if not self.confirm("Ajouter ce transfert à la file ?", text):
-            return "L’utilisateur a refusé ce transfert."
         conflict = self.window.settings.value("conflict", "ask")
         record = self.window.transfers.add(Transfer(connection, local, remote, bool(upload),
                                                     bool(directory or (upload and Path(local).is_dir())), conflict=conflict))
