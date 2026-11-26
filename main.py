@@ -25,6 +25,11 @@ def main() -> None:
         QMessageBox.information(None, "SMFTP", "SMFTP est déjà ouvert.\n\nUtilisez la fenêtre existante : deux instances écraseraient mutuellement les profils et la file de transferts.")
         sys.exit(0)
     logging_available = configure_logging()
+    from smftp.utils.storage import clean_stale_temporary
+    from PySide6.QtCore import QSettings
+    import tempfile
+    custom_temp = QSettings().value("temp_directory", "") or ""
+    clean_stale_temporary([tempfile.gettempdir()] + ([custom_temp] if custom_temp else []))
     window = MainWindow()
     if not logging_available:
         window.log(window.tr("Le journal sur disque est indisponible. Vérifiez les droits du dossier utilisateur."))

@@ -21,6 +21,9 @@ class Transfers(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.records = []
+        self.queued = {}  # task key -> latest record, for the duplicate check
+        self.batch_depth = 0
+        self.batch_dirty = False
         self.limit = 2
         self.stopping = False
         self.paused = False
@@ -143,11 +146,32 @@ class Transfers(QWidget):
         self.limit = value
         self.schedule()
 
+    def batch(self):
+        """Add many tasks (synchronization plan, scheduled task) with one queue save at the end.
+
+        Saving the whole queue after each of thousands of additions froze the window.
+        """
+        from contextlib import contextmanager
+
+        @contextmanager
+        def grouped():
+            self.batch_depth += 1
+            try:
+                yield
+            finally:
+                self.batch_depth -= 1
+                if not self.batch_depth and self.batch_dirty:
+                    self.batch_dirty = False
+                    self.persist()
+        return grouped()
+
+    @staticmethod
+    def task_key(task):
+        return (task.connection.identity, task.local, task.remote, task.upload)
+
     def add(self, task, *, restored=False, transient=False):
-        if any(r["state"] in ("pending", "paused_pending", "active") and
-            r["task"].connection.identity == task.connection.identity and
-            r["task"].local == task.local and r["task"].remote == task.remote and
-            r["task"].upload == task.upload for r in self.records):
+        known = self.queued.get(self.task_key(task))
+        if known is not None and known["state"] in ("pending", "paused_pending", "active"):
             self.activity.emit("Statut : ce transfert est déjà dans la file.")
             return None
         from pathlib import Path
@@ -171,12 +195,16 @@ class Transfers(QWidget):
         worker.failed.connect(lambda error, r=record: self.report_failure(r, error))
         worker.finished.connect(self.schedule)
         self.records.append(record)
+        self.queued[self.task_key(task)] = record
         self.persist()
         self.schedule()
         return record
 
     def persist(self):
         if self.stopping:
+            return
+        if self.batch_depth:
+            self.batch_dirty = True
             return
         try:
             from smftp.utils.queue_store import write_queue
@@ -191,8 +219,9 @@ class Transfers(QWidget):
         from smftp.utils.queue_store import read_queue
         try:
             tasks = read_queue()
-            for task in tasks:
-                self.add(task, restored=True)
+            with self.batch():
+                for task in tasks:
+                    self.add(task, restored=True)
             if tasks:
                 self.activity.emit("Statut : file restaurée en pause. Connectez le profil puis choisissez Reprendre tout.")
         except (OSError, ValueError, KeyError, TypeError):
@@ -243,7 +272,9 @@ class Transfers(QWidget):
     def clear_finished(self):
         """Remove successful jobs only; failed jobs keep their retry data."""
         self.tables[2].clear()
-        self.records = [r for r in self.records if r["state"] != "Terminé" or r["worker"].isRunning()]
+        kept = [r for r in self.records if r["state"] != "Terminé" or r["worker"].isRunning()]
+        self.release([r for r in self.records if not any(r is k for k in kept)])
+        self.records = kept
         self.persist()
         self.update_actions()
 
@@ -254,9 +285,18 @@ class Transfers(QWidget):
         self.tables[1].clear()
         removed = [r for r in self.records if r["state"] in ("Échoué", "Annulé", "Relancé") and not r["worker"].isRunning()]
         self.records = [r for r in self.records if not any(r is x for x in removed)]
+        self.release(removed)
         self.persist()
         self.update_actions()
         self.discarded.emit([r["task"] for r in removed])
+
+    def release(self, records):
+        """Free the threads of jobs removed from the list (a long session keeps no leftovers)."""
+        for record in records:
+            if not record["worker"].isRunning():
+                record["worker"].deleteLater()
+            if self.queued.get(self.task_key(record["task"])) is record:
+                del self.queued[self.task_key(record["task"])]
 
     def report_failure(self, record, error):
         record["item"].setToolTip(5, error.summary + "\n" + error.details)

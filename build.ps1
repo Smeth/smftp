@@ -8,6 +8,15 @@ $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 $python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
 
+# A release is built from the exact, tested versions of requirements.lock.
+$locked = Get-Content (Join-Path $PSScriptRoot 'requirements.lock') | Where-Object { $_ -and -not $_.StartsWith('#') } | Sort-Object
+$installed = & $python -m pip freeze --exclude-editable | Sort-Object
+$difference = Compare-Object $locked $installed
+if ($difference) {
+    Write-Warning ("L'environnement diffère de requirements.lock (" + $difference.Count + " ligne(s)). " +
+                   "Pour une version publiée : python -m pip install -r requirements.lock")
+}
+
 & $python tools\version_info.py build\version_info.txt
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # numpy and PIL are pulled in by over-broad analysis only; SMFTP and the Claude SDK do not use them.

@@ -45,6 +45,13 @@ class BaseClient(ABC):
     @abstractmethod
     def close(self) -> None: ...
 
+    def abort(self) -> None:
+        """Called from another thread: make a blocking network call return at once."""
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def upload(self, local: str, remote: str, progress, offset: int = 0) -> None:
         raise NotImplementedError
 
@@ -80,12 +87,16 @@ class BaseClient(ABC):
             raise IsADirectoryError("Le remplacement d’un dossier n’est pas pris en charge : renommez ou supprimez d’abord la destination.")
         self.overwrite_move(source, target)
 
-    def remove(self, path: str, directory: bool = False) -> None:
+    def remove(self, path: str, directory: bool = False, depth: int = 0) -> None:
         if directory:
+            if depth > 100:
+                raise ValueError("Arborescence trop profonde (boucle de liens ?) ; suppression interrompue.")
             for item in self.listdir(path):
                 if item.name in (".", "..") or any(c in item.name for c in "/\\\x00"):
                     raise ValueError("Nom distant invalide ; suppression interrompue.")
-                self.remove(posixpath.join(path, item.name), item.is_dir)
+                # A link is removed itself, never followed into its target.
+                is_link = item.permissions.startswith("l")
+                self.remove(posixpath.join(path, item.name), item.is_dir and not is_link, depth + 1)
             self.rmdir(path)
         else:
             self.unlink(path)
@@ -184,7 +195,10 @@ class FTPClient(BaseClient):
     def set_encoding(self, encoding: str) -> None:
         """Switch the session's name encoding, control channel included."""
         self.ftp.encoding = encoding
+        previous = self.ftp.file
         self.ftp.file = self.ftp.sock.makefile("r", encoding=encoding)
+        if previous is not None:
+            previous.close()  # Closes the reader only; the socket stays open.
         detected_encodings[self.identity] = encoding
 
     def read_lines(self, command: str) -> list[str]:
@@ -290,6 +304,16 @@ class FTPClient(BaseClient):
     def close(self) -> None:
         if hasattr(self, "ftp"):
             self.ftp.close()
+
+    def abort(self) -> None:
+        # shutdown() wakes a recv() blocked in the worker thread (a long server checksum).
+        import socket
+        for sock in (getattr(getattr(self, "ftp", None), "sock", None),):
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
 
     def upload(self, local, remote, progress, offset=0):
         done = offset

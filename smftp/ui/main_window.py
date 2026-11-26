@@ -569,16 +569,18 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         if not self.online:
             self.on_error(self.tr("Connectez un serveur avant de transférer des fichiers."))
             return
-        for item in paths:
-            source = item["path"]
-            try:
-                from smftp.utils.paths import local_child
-                local = str(local_child(target, posixpath.basename(source))) if source_remote else source
-            except ValueError as error:
-                self.on_error(str(error))
-                return
-            remote = source if source_remote else posixpath.join(target, Path(source).name)
-            self.transfers.add(Transfer(self.connection, local, remote, not source_remote, item["directory"], conflict=self.settings.value("conflict", "ask")))
+        from smftp.utils.paths import local_child
+        with self.transfers.batch():
+            for item in paths:
+                source = item["path"]
+                try:
+                    local = str(local_child(target, posixpath.basename(source))) if source_remote else source
+                except ValueError as error:
+                    self.on_error(str(error))
+                    return
+                remote = source if source_remote else posixpath.join(target, Path(source).name)
+                self.transfers.add(Transfer(self.connection, local, remote, not source_remote, item["directory"],
+                                            conflict=self.settings.value("conflict", "ask")))
 
     def context_menu(self, panel, point):
         menu = QMenu(self)
@@ -1005,21 +1007,22 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                 deletions = []
                 self.log(self.tr("Synchronisation : suppressions annulées ; seules les copies sont lancées."))
         copies = set()  # id() of the copy tasks queued for this plan.
-        for path, state, _, expected in selected:
-            if state in DELETIONS:
-                continue
-            from smftp.utils.paths import local_child
-            destination = Path(local)
-            try:
-                for part in path.split("/"):
-                    destination = local_child(destination, part)
-            except ValueError as error:
-                self.on_error(str(error))
-                return
-            task = Transfer(connection, str(destination), posixpath.join(remote, path), upload,
-                            conflict="ask", planned=True, expected=expected)
-            if self.transfers.add(task) is not None:
-                copies.add(id(task))
+        from smftp.utils.paths import local_child
+        with self.transfers.batch():
+            for path, state, _, expected in selected:
+                if state in DELETIONS:
+                    continue
+                destination = Path(local)
+                try:
+                    for part in path.split("/"):
+                        destination = local_child(destination, part)
+                except ValueError as error:
+                    self.on_error(str(error))
+                    return
+                task = Transfer(connection, str(destination), posixpath.join(remote, path), upload,
+                                conflict="ask", planned=True, expected=expected)
+                if self.transfers.add(task) is not None:
+                    copies.add(id(task))
         if deletions:
             self.delete_after_copies(copies, connection, local, remote, upload, deletions)
 

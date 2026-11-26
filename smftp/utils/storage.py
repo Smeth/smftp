@@ -34,6 +34,36 @@ def acquire_instance_lock():
     return None, True  # Permission or unknown error: do not block startup.
 
 
+def clean_stale_temporary(directories=None, older_than: float = 86400) -> int:
+    """Remove SMFTP's temporary folders (edit copies, drag copies) older than a day.
+
+    They are deleted when SMFTP closes normally; a crash left them behind. Only
+    folders with SMFTP's prefixes are touched. Returns the number removed.
+    """
+    import re
+    import shutil
+    import tempfile
+    import time
+    # Exactly the names tempfile.TemporaryDirectory gives SMFTP's folders: a user's
+    # own "smftp-backup" folder in a chosen temporary directory is never touched.
+    pattern = re.compile(r"smftp-(?:copy-|drag-)?[a-z0-9_]{8}")
+    removed = 0
+    limit = time.time() - older_than
+    for base in directories or [tempfile.gettempdir()]:
+        try:
+            candidates = [p for p in Path(base).glob("smftp-*") if pattern.fullmatch(p.name)]
+        except OSError:
+            continue
+        for path in candidates:
+            try:
+                if path.is_dir() and not path.is_symlink() and path.stat().st_mtime < limit:
+                    shutil.rmtree(path)
+                    removed += 1
+            except OSError:
+                continue
+    return removed
+
+
 def configure_logging() -> bool:
     try:
         handler = RotatingFileHandler(data_dir() / "smftp.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")

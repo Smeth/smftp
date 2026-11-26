@@ -239,12 +239,13 @@ class Scheduler(QObject):
         if self.stopped:
             self.finish(run, S.INTERRUPTED, "SMFTP se ferme.")
             return
-        for transfer in transfers:
-            # Registered first: a transfer can end before add() returns.
-            run["pending"][id(transfer)] = transfer
-            if self.window.transfers.add(transfer, transient=True) is None:
-                run["pending"].pop(id(transfer), None)
-                run["done"].append("Ignoré")
+        with self.window.transfers.batch():
+            for transfer in transfers:
+                # Registered first: a transfer can end before add() returns.
+                run["pending"][id(transfer)] = transfer
+                if self.window.transfers.add(transfer, transient=True) is None:
+                    run["pending"].pop(id(transfer), None)
+                    run["done"].append("Ignoré")
         count = len(run["pending"])
         if not count:
             self.finish(run, S.SKIPPED, "Les transferts sont déjà dans la file.")

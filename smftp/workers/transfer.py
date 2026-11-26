@@ -96,6 +96,11 @@ class TransferWorker(QThread):
         self.cancelled.set()
         self.running.set()
         self.answer.set()
+        # A server computing a checksum may not answer for minutes: cut the connection
+        # so that closing SMFTP or cancelling never waits for it.
+        client = self.client
+        if client is not None:
+            client.abort()
 
     def report_activity(self, message):
         from smftp.core.errors import redact
@@ -300,7 +305,14 @@ class TransferWorker(QThread):
                         pass
                     raise RuntimeError("L’empreinte du fichier envoyé ne correspond pas à la source. "
                                        "Le fichier distant d’origine est conservé ; le temporaire a été supprimé.")
-                client.replace(temporary, remote)
+                try:
+                    client.replace(temporary, remote)
+                except Exception:
+                    try:
+                        client.unlink(temporary)
+                    except Exception:
+                        pass
+                    raise
             else:
                 client.upload(str(local), remote, self.progress, offset)
                 if not self.verify_content(client, local, remote):
@@ -392,12 +404,15 @@ class TransferWorker(QThread):
                                "Le fichier local d’origine est conservé ; relancez le téléchargement.")
         os.replace(temporary, local)
 
+    client = None
+
     def run(self):
         client = None
         try:
             self.checkpoint()
             protocol = self.task.connection.protocol
             client = make_client(protocol, str(data_dir() / "known_hosts"), self.report_activity)
+            self.client = client
             client.connect(self.task.connection)
             self.copy(client, Path(self.task.local), self.task.remote, self.task.directory)
             self.report_activity("Statut : transfert terminé.")
@@ -406,10 +421,16 @@ class TransferWorker(QThread):
             self.report_activity("Statut : transfert annulé.")
             self.result.emit("Annulé")
         except Exception as error:
+            if self.cancelled.is_set():
+                # The connection was cut on purpose by cancel().
+                self.report_activity("Statut : transfert annulé.")
+                self.result.emit("Annulé")
+                return
             from smftp.core.errors import describe_error
             self.failed.emit(describe_error(error, self.task.connection, "Téléversement" if self.task.upload else "Téléchargement"))
             self.result.emit("Échoué")
         finally:
+            self.client = None
             if client:
                 try:
                     client.close()

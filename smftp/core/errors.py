@@ -23,7 +23,12 @@ def redact(text: str, secrets: tuple[str, ...] = ()) -> str:
         variants = {secret, quote(secret, safe=""), quote_plus(secret),
                     base64.b64encode(secret.encode()).decode(), repr(secret)[1:-1]}
         for value in sorted(variants, key=len, reverse=True):
-            text = text.replace(value, "[masqué]")
+            if len(value) < 4:
+                # A very short secret ("p") would otherwise mask every such letter of the
+                # message: hide it only where it stands alone.
+                text = re.sub(rf"(?<!\w){re.escape(value)}(?!\w)", "[masqué]", text)
+            else:
+                text = text.replace(value, "[masqué]")
     text = re.sub(r"(?i)([a-z][a-z0-9+.-]*://[^\s/@:]+:)[^\s/@]+(@)", r"\1[masqué]\2", text)
     text = re.sub(r"(?im)\b(PASS(?:WORD)?|PASSPHRASE|TOKEN|SECRET)\s*[:= ]\s*[^\r\n]+", r"\1 [masqué]", text)
     return "".join(c for c in text if c in "\n\t" or ord(c) >= 32)[:8000]

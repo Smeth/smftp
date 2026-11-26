@@ -9,7 +9,14 @@ from smftp.models.entries import Connection
 from smftp.workers.transfer import Transfer
 
 
+# Same limits for writing and reading: a queue that was saved can always be restored.
+MAX_TASKS = 100_000
+MAX_BYTES = 200_000_000
+
+
 def write_queue(tasks: list[Transfer]) -> None:
+    if len(tasks) > MAX_TASKS:
+        raise ValueError("File de transferts trop longue pour être conservée.")
     rows = [dict(profile=profile_for(t.connection), local=t.local, remote=t.remote,
                  upload=t.upload, directory=t.directory, conflict=t.conflict,
                  safe_upload=t.safe_upload, completed=dict(t.completed)) for t in tasks]
@@ -45,10 +52,10 @@ def read_queue() -> list[Transfer]:
     path = data_dir() / "queue.json"
     if not path.exists():
         return []
-    if path.stat().st_size > 5_000_000:
+    if path.stat().st_size > MAX_BYTES:
         raise ValueError("File de transferts trop volumineuse.")
     rows = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(rows, list) or len(rows) > 5000:
+    if not isinstance(rows, list) or len(rows) > MAX_TASKS:
         raise ValueError("File de transferts invalide.")
     tasks = []
     for row in rows:

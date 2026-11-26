@@ -588,6 +588,16 @@ class ChatInput(QPlainTextEdit):
         self.setTextCursor(cursor)
 
 
+def open_web_link(url: str) -> bool:
+    """Open https:// links only; anything else is refused."""
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QDesktopServices
+    link = QUrl(url)
+    if link.scheme().lower() != "https" or not link.host():
+        return False
+    return QDesktopServices.openUrl(link)
+
+
 class Bubble(QFrame):
     """One message: the user's on the right, the assistant's on the left (Markdown)."""
 
@@ -601,7 +611,10 @@ class Bubble(QFrame):
         self.label.setWordWrap(True)
         self.label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse |
                                            Qt.TextInteractionFlag.LinksAccessibleByMouse)
-        self.label.setOpenExternalLinks(True)
+        # Model answers may be influenced by file names or server messages: never open
+        # file:, \\server, ms-msdt:, search-ms: or other local handlers from a link.
+        self.label.setOpenExternalLinks(False)
+        self.label.linkActivated.connect(open_web_link)
         if kind == "assistant":
             self.label.setTextFormat(Qt.TextFormat.MarkdownText)
         else:
@@ -926,6 +939,26 @@ class AssistantPanel(QFrame):
         settings.setValue("assistant_consent", True)
         return True
 
+    def remote_ollama_consent(self, url):
+        """Asked once per address: requests and file names leave this PC, in clear text over http."""
+        settings = self.window.settings
+        if settings.value("assistant_ollama_consent", "") == url:
+            return True
+        clear = url.lower().startswith("http://")
+        text = self.tr("Le serveur Ollama « %1 » n’est pas sur ce PC. Vos messages, ainsi que les noms de fichiers, "
+                       "de dossiers, de profils et les extraits du journal consultés lui seront envoyés. "
+                       "Les mots de passe ne sont jamais transmis.").replace("%1", url)
+        if clear:
+            text += "\n\n" + self.tr("L’adresse commence par http:// : ces données circuleront EN CLAIR sur le réseau. "
+                                       "Préférez https:// ou un tunnel SSH.")
+        text += "\n\n" + self.tr("Utiliser ce serveur ?")
+        if QMessageBox.question(self.window, self.tr("Assistant IA"), text,
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return False
+        settings.setValue("assistant_ollama_consent", url)
+        return True
+
     def make_conversation(self):
         if self.conversation_factory:
             return self.conversation_factory()
@@ -934,6 +967,8 @@ class AssistantPanel(QFrame):
             if not config["ollama_model"]:
                 self.append("error", self.tr("Aucun modèle local choisi : ouvrez les réglages de l’assistant."))
                 self.open_settings()
+                return None
+            if not A.is_local_url(config["ollama_url"]) and not self.remote_ollama_consent(config["ollama_url"]):
                 return None
             return A.OllamaConversation(self.toolbox.execute, model=config["ollama_model"],
                                         base_url=config["ollama_url"], thinking=config["ollama_thinking"])
@@ -945,7 +980,8 @@ class AssistantPanel(QFrame):
             try:
                 import anthropic
             except ImportError:
-                self.append("error", self.tr("Le module « anthropic » n’est pas installé : pip install anthropic."))
+                self.append("error", self.tr("Le composant Claude manque dans cette installation de SMFTP. "
+                                             "Réinstallez SMFTP, ou choisissez un modèle local (Ollama) dans les réglages."))
                 return None
             key = read_api_key() or os.environ.get("ANTHROPIC_API_KEY")
             if not key:

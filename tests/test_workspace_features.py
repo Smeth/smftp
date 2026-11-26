@@ -148,7 +148,8 @@ def test_atomic_upload_keeps_original_on_failed_rename(ftp_server, tmp_path, mon
     worker.run()
     assert results == ["Échoué"]
     assert target.read_text() == "old data"
-    assert list(root.glob(".target.txt.smftp-*.part"))
+    # The refused replacement leaves no hidden partial file behind on the server.
+    assert not list(root.glob(".target.txt.smftp-*.part"))
 
 
 def test_atomic_upload_replaces_after_full_upload(ftp_server, tmp_path):

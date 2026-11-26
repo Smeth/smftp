@@ -88,7 +88,9 @@ def normalize_task(task: dict, profiles: list[str] | None = None) -> dict:
     """
     if not isinstance(task, dict):
         raise ValueError("La tâche doit être un objet.")
-    name = str(task.get("name", "")).strip()
+    # One line, no control characters: a name proposed by the assistant appears in
+    # confirmation dialogs and must not be able to fake their content.
+    name = " ".join("".join(c if c.isprintable() else " " for c in str(task.get("name", ""))).split())[:80]
     if not name:
         raise ValueError("Donnez un nom à la tâche.")
     kind = task.get("kind")

@@ -14,6 +14,8 @@ python -m venv .venv
 .\.venv\Scripts\python.exe main.py
 ```
 
+`requirements.txt` donne les plages compatibles. `requirements.lock` fige les versions exactes de la dernière version testée : à installer pour construire une version publiée (`build.ps1` signale tout écart).
+
 Pour lancer avec le script Windows : `powershell -ExecutionPolicy Bypass -File .\run.ps1`.
 
 Sur Linux / macOS : `python3 -m venv .venv`, puis `.venv/bin/pip install -r requirements.txt` et `.venv/bin/python main.py`. Un environnement graphique Qt et un backend de coffre-fort système sont nécessaires. Ces plateformes n’ont pas été testées dans cette session.

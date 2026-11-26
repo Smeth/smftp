@@ -425,10 +425,27 @@ class TerminalView(QWidget):
         text = QGuiApplication.clipboard().text()
         if not text:
             return
+        # An ESC in the clipboard could end bracketed paste mode ("\x1b[201~") and make
+        # the shell run the rest as typed commands; other control characters are dropped too.
+        text = "".join(c for c in text if c in "\t\n\r" or (ord(c) >= 32 and ord(c) != 127))
+        lines = [line for line in text.replace("\r\n", "\n").split("\n") if line.strip()]
+        if len(lines) > 1 and not self.confirm_multiline(lines):
+            return
         data = text.replace("\r\n", "\r").replace("\n", "\r").encode("utf-8")
         if BRACKETED_PASTE in self.screen.mode:
             data = b"\x1b[200~" + data + b"\x1b[201~"
         self.send_input(data)
+
+    def confirm_multiline(self, lines) -> bool:
+        """Several lines may run several commands at once: show them before sending."""
+        from PySide6.QtWidgets import QMessageBox
+        shown = "\n".join(lines[:8]) + ("\n…" if len(lines) > 8 else "")
+        return QMessageBox.question(
+            self, self.tr("Coller plusieurs lignes"),
+            self.tr("Le texte à coller contient %1 lignes ; le serveur peut les exécuter comme autant de commandes :")
+            .replace("%1", str(len(lines))) + "\n\n" + shown + "\n\n" + self.tr("Coller quand même ?"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
 
     def clear_history(self):
         self.screen.history.top.clear()
