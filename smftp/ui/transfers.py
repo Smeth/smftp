@@ -42,6 +42,7 @@ class Transfers(QWidget):
         self.paused = False
         self.limiter = RateLimiter()
         self.verify = True  # Fingerprint check after each file (preference).
+        self.mark_downloads = True  # "Mark of the Web" on downloaded files (preference).
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
         bar = QHBoxLayout()
@@ -206,6 +207,7 @@ class Transfers(QWidget):
         worker = TransferWorker(task, self)
         worker.limiter = self.limiter
         worker.verify = self.verify
+        worker.mark_downloads = self.mark_downloads
         record = {"task": task, "item": item, "bar": progress, "worker": worker,
                   "state": "paused_pending" if restored else "pending", "speed": 0,
                   "restored": restored, "transient": transient}

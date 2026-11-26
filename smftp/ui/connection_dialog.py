@@ -5,7 +5,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QComboBox, QSpinBox, QCompleter,
                                QCheckBox, QDialogButtonBox, QLabel, QWidget, QHBoxLayout, QFileDialog)
-from smftp.models.entries import Connection, PROTOCOL_LABELS, DEFAULT_PORTS, ENCODINGS, normalize_encoding, uses_ssh
+from smftp.models.entries import (Connection, PROTOCOL_LABELS, DEFAULT_PORTS, DEFAULT_PROXY_PORTS, ENCODINGS,
+                                  PROXY_TYPES, format_offset, normalize_encoding, normalize_offset, uses_ssh)
 from smftp.ui.icons import icon_button, make_icon, theme_of, recolor
 
 DEFAULT_PROTOCOL = "SFTP"  # Encrypted by default; plain FTP stays one choice away.
@@ -143,6 +144,33 @@ class ConnectionDialog(QDialog):
         self.transfer_mode.setToolTip(self.tr(
             "Passif : votre poste ouvre la connexion de données ; fonctionne derrière la plupart des box et pare-feu.\n"
             "Actif : le serveur se connecte à votre poste ; à choisir seulement si le serveur refuse le mode passif."))
+        self.use_agent = QCheckBox(self.tr("Utiliser l’agent SSH (Pageant ou OpenSSH)"))
+        self.use_agent.setToolTip(self.tr("Les clés chargées dans Pageant ou dans l’agent OpenSSH de Windows "
+                                          "sont aussi proposées au serveur (SFTP et SSH)."))
+        self.proxy_type = QComboBox()
+        for value, label in PROXY_TYPES.items():
+            self.proxy_type.addItem(self.tr(label) if value == "none" else label, value)
+        self.proxy_type.setToolTip(self.tr("Passer par un proxy SOCKS5 ou HTTP (méthode CONNECT) pour joindre le serveur. "
+                                           "En FTP, seul le mode passif fonctionne à travers un proxy."))
+        self.proxy_host = QLineEdit()
+        self.proxy_host.setPlaceholderText(self.tr("Ex. proxy.entreprise.fr"))
+        self.proxy_port = QSpinBox()
+        self.proxy_port.setRange(1, 65535)
+        self.proxy_port.setValue(DEFAULT_PROXY_PORTS["socks5"])
+        self.proxy_port.setAccessibleName(self.tr("Port du proxy"))
+        self.proxy_user = QLineEdit()
+        self.proxy_user.setPlaceholderText(self.tr("Facultatif"))
+        self.proxy_password = QLineEdit()
+        self.proxy_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.proxy_password.setPlaceholderText(self.tr("Conservé dans le coffre-fort système"))
+        self.current_proxy = "none"
+        self.time_offset = QComboBox()
+        self.time_offset.addItem(self.tr("Automatique (détection par MDTM)"), None)
+        for minutes in range(-12 * 60, 14 * 60 + 1, 15):
+            self.time_offset.addItem(self.tr("Heure du serveur = {offset}").format(offset=format_offset(minutes)), minutes)
+        self.time_offset.setToolTip(self.tr(
+            "Sans MLSD, la liste FTP donne l’heure locale du serveur. Automatique compare cette heure à celle "
+            "donnée par MDTM (en UTC) sur un fichier ; choisissez le fuseau du serveur si la détection échoue."))
         self.labels = {}
         rows = [("Nom du profil", self.name, False), ("Protocole", self.protocol, True),
                 ("Hôte", self.host, True), ("Port", self.port, True), ("Utilisateur", self.user, True),
@@ -152,7 +180,13 @@ class ConnectionDialog(QDialog):
                     ("Dossier local de départ", self.with_button(self.local_directory, self.local_picker), False),
                     ("Dossier distant de départ", self.remote_directory, False), ("Délai réseau", self.timeout, False),
                     ("Mode de transfert", self.transfer_mode, False),
-                    ("Encodage des noms", self.encoding, False)]
+                    ("Encodage des noms", self.encoding, False),
+                    ("Décalage horaire du serveur", self.time_offset, False),
+                    ("Agent SSH", self.use_agent, False),
+                    ("Proxy", self.proxy_type, False),
+                    ("Hôte et port du proxy", self.with_button(self.proxy_host, self.proxy_port), False),
+                    ("Utilisateur du proxy", self.proxy_user, False),
+                    ("Mot de passe du proxy", self.proxy_password, False)]
         for label, widget, required in rows:
             self.add_row(form, label, widget, required)
         section = QLabel(self.tr("OPTIONS AVANCÉES"))
@@ -194,6 +228,10 @@ class ConnectionDialog(QDialog):
             field.textChanged.connect(self.validate)
             field.editingFinished.connect(self.mark_touched)
         self.host.editingFinished.connect(self.expand_address)
+        self.transfer_mode.currentIndexChanged.connect(self.update_warning)
+        self.proxy_type.currentIndexChanged.connect(self.proxy_changed)
+        self.proxy_host.textChanged.connect(self.validate)
+        self.proxy_port.valueChanged.connect(self.validate)
         self.set_protocol(DEFAULT_PROTOCOL)
         self.port.setValue(DEFAULT_PORTS[DEFAULT_PROTOCOL])
         if site:
@@ -212,14 +250,31 @@ class ConnectionDialog(QDialog):
             if self.encoding.findData(encoding) < 0:
                 self.encoding.addItem(encoding, encoding)
             self.encoding.setCurrentIndex(self.encoding.findData(encoding))
+            offset = normalize_offset(site.get("time_offset"))
+            index = self.time_offset.findData(offset) if offset is not None else 0
+            if index < 0:
+                self.time_offset.addItem(self.tr("Heure du serveur = {offset}").format(offset=format_offset(offset)), offset)
+                index = self.time_offset.count() - 1
+            self.time_offset.setCurrentIndex(index)
+            self.use_agent.setChecked(bool(site.get("use_agent", False)))
+            kind = site.get("proxy_type", "none")
+            self.proxy_type.setCurrentIndex(max(0, self.proxy_type.findData(kind)))
+            self.proxy_host.setText(site.get("proxy_host", ""))
+            self.proxy_port.setValue(int(site.get("proxy_port") or DEFAULT_PROXY_PORTS.get(kind, 1080)))
+            self.proxy_user.setText(site.get("proxy_user", ""))
             self.touched = True
         self.protocol_changed()
+        self.proxy_changed()
         if site:
             try:
                 import keyring
-                stored = keyring.get_password("SMFTP", self.connection().identity)
+                from smftp.utils.profiles import proxy_key
+                identity = self.connection().identity
+                stored = keyring.get_password("SMFTP", identity)
                 self.password.setText(stored or "")
                 self.remember.setChecked(stored is not None)
+                if self.proxy_user.text():
+                    self.proxy_password.setText(keyring.get_password("SMFTP", proxy_key(identity)) or "")
             except Exception:
                 self.warning.setText(self.tr("Le coffre-fort système est indisponible. Saisissez le secret pour cette connexion."))
         recolor(self, dark)
@@ -272,25 +327,47 @@ class ConnectionDialog(QDialog):
         self.key_picker.setEnabled(sftp)
         self.transfer_mode.setEnabled(not sftp)
         self.encoding.setEnabled(not sftp)
+        self.time_offset.setEnabled(not sftp)
+        self.use_agent.setEnabled(sftp)
         self.local_directory.setEnabled(not terminal)
         self.local_picker.setEnabled(not terminal)
-        # SSH terminal: no local folder, transfer mode or file-name encoding to set.
+        # SSH terminal: no local folder, transfer mode, file-name encoding or listing time to set.
         if hasattr(self, "form"):
-            for widget in (self.local_directory.parentWidget(), self.transfer_mode, self.encoding):
+            for widget in (self.local_directory.parentWidget(), self.transfer_mode, self.encoding, self.time_offset):
                 if self.form.indexOf(widget) >= 0:
                     self.form.setRowVisible(widget, not terminal)
             # Only the height follows the hidden rows: the width keeps the buttons readable.
             self.resize(max(self.width(), self.sizeHint().width()), self.sizeHint().height())
         self.ok_button.setText(self.tr("Enregistrer et ouvrir le terminal") if terminal
                                else self.tr("Enregistrer et connecter"))
+        self.update_warning()
+
+    def proxy_changed(self, *_):
+        kind = self.proxy_type.currentData() or "none"
+        if self.proxy_port.value() == DEFAULT_PROXY_PORTS.get(self.current_proxy):
+            self.proxy_port.setValue(DEFAULT_PROXY_PORTS[kind])
+        self.current_proxy = kind
+        for widget in (self.proxy_host, self.proxy_port, self.proxy_user, self.proxy_password):
+            widget.setEnabled(kind != "none")
+        self.validate()
+
+    def update_warning(self, *_):
+        protocol = self.protocol_value()
+        terminal = protocol == "SSH"
+        active = not uses_ssh(protocol) and not self.transfer_mode.currentData()
         if terminal:
             self.warning.setObjectName("muted")
             self.warning.setText(self.tr("Connexion chiffrée : SSH. Ce profil ouvre une console sur le serveur "
                                          "à la place de l’explorateur de fichiers."))
         elif protocol == "FTP":
             self.warning.setObjectName("warning")
-            self.warning.setText(self.tr("⚠ FTP transmet le mot de passe et les fichiers en clair. "
-                                         "Préférez FTPS ou SFTP si le serveur les accepte."))
+            text = self.tr("⚠ FTP transmet le mot de passe et les fichiers en clair. "
+                           "Préférez FTPS ou SFTP si le serveur les accepte.")
+            if active:
+                text += "\n" + self.tr("⚠ Mode actif sans chiffrement : le serveur se connecte à votre poste, "
+                                       "ce qui demande d’ouvrir un port entrant dans le pare-feu, et les données "
+                                       "circulent en clair. Préférez le mode passif.")
+            self.warning.setText(text)
         else:
             self.warning.setObjectName("muted")
             self.warning.setText(self.tr("Connexion chiffrée : %s.") % self.tr(PROTOCOL_LABELS[protocol]))
@@ -334,13 +411,19 @@ class ConnectionDialog(QDialog):
         key = self.key.text().strip()
         if key and uses_ssh(self.protocol_value()) and not Path(key).is_file():
             found["Clé privée"] = self.tr("Clé privée introuvable : %s") % key
+        if (self.proxy_type.currentData() or "none") != "none":
+            if not self.proxy_host.text().strip():
+                found["Proxy"] = self.tr("Indiquez l’hôte du proxy.")
+            elif not uses_ssh(self.protocol_value()) and not self.transfer_mode.currentData():
+                found["Proxy"] = self.tr("Le mode actif est impossible à travers un proxy : "
+                                         "choisissez le mode passif dans le profil.")
         if not found:
             try:
                 profile_for(self.connection())
             except (ValueError, TypeError) as error:
                 message = str(error)
                 # The message starts with the field name, in French or translated.
-                field = next((f for f in ("Hôte", "Utilisateur")
+                field = next((f for f in ("Hôte", "Utilisateur", "Proxy")
                               if message.startswith(f) or message.startswith(self.tr(f))), "Port")
                 found[field] = message
         return found
@@ -390,7 +473,7 @@ class ConnectionDialog(QDialog):
         self.validation.setText("\n".join(shown.values()))
         self.validation.setVisible(bool(shown))
         for label, field in (("Hôte", self.host), ("Utilisateur", self.user), ("Clé privée", self.key),
-                             ("Nom du profil", self.name)):
+                             ("Nom du profil", self.name), ("Proxy", self.proxy_host)):
             field.setProperty("invalid", label in shown)
             field.style().unpolish(field)
             field.style().polish(field)
@@ -487,7 +570,7 @@ class ConnectionDialog(QDialog):
     def choose_key(self):
         start = self.key.text() or str(Path.home() / ".ssh")
         filename, _ = QFileDialog.getOpenFileName(self, self.tr("Sélectionner une clé privée SSH"),
-            start, self.tr("Clés SSH (*.pem *.key id_rsa id_ed25519 id_ecdsa);;Tous les fichiers (*)"))
+            start, self.tr("Clés SSH (*.pem *.key *.ppk id_rsa id_ed25519 id_ecdsa);;Clés PuTTY (*.ppk);;Tous les fichiers (*)"))
         if filename:
             self.key.setText(filename)
 
@@ -499,8 +582,15 @@ class ConnectionDialog(QDialog):
 
     def connection(self) -> Connection:
         protocol = self.protocol_value()
+        proxy = self.proxy_type.currentData() or "none"
         return Connection(self.host.text().strip(), self.user.text().strip(), protocol,
                           self.port.value(), self.password.text(), self.key.text().strip() if uses_ssh(protocol) else "", self.remember.isChecked(), self.name.text().strip(),
                           self.group.text().strip(), self.local_directory.text().strip(), self.remote_directory.text().strip(), self.timeout.value(),
                           uses_ssh(protocol) or bool(self.transfer_mode.currentData()),
-                          "auto" if uses_ssh(protocol) else (self.encoding.currentData() or "auto"))
+                          "auto" if uses_ssh(protocol) else (self.encoding.currentData() or "auto"),
+                          proxy_type=proxy, proxy_host=self.proxy_host.text().strip() if proxy != "none" else "",
+                          proxy_port=self.proxy_port.value(),
+                          proxy_user=self.proxy_user.text().strip() if proxy != "none" else "",
+                          proxy_password=self.proxy_password.text() if proxy != "none" else "",
+                          use_agent=uses_ssh(protocol) and self.use_agent.isChecked(),
+                          time_offset=None if uses_ssh(protocol) else self.time_offset.currentData())

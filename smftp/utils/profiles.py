@@ -6,7 +6,8 @@ import re
 from pathlib import Path
 import xml.etree.ElementTree as ET
 from smftp.i18n import tr
-from smftp.models.entries import Connection, DEFAULT_PORTS, normalize_encoding
+from smftp.models.entries import (Connection, DEFAULT_PORTS, DEFAULT_PROXY_PORTS, PROXY_TYPES,
+                                  normalize_encoding, normalize_offset)
 
 def normalize_profile(site: dict) -> dict:
     if not isinstance(site, dict):
@@ -20,6 +21,21 @@ def normalize_profile(site: dict) -> dict:
         raise ValueError(tr("Hôte invalide : saisissez une adresse sans préfixe ftp:// ni chemin."))
     if not isinstance(user, str) or not user.strip() or any(c in user for c in "\r\n"):
         raise ValueError(tr("Utilisateur manquant ou invalide."))
+    proxy_type = str(site.get("proxy_type") or "none").lower()
+    if proxy_type not in PROXY_TYPES:
+        raise ValueError(tr("Type de proxy invalide."))
+    proxy_host = str(site.get("proxy_host") or "").strip()
+    proxy_port = int(site.get("proxy_port") or DEFAULT_PROXY_PORTS[proxy_type])
+    proxy_user = str(site.get("proxy_user") or "").strip()
+    if proxy_type == "none":
+        proxy_host, proxy_user = "", ""
+    else:
+        if not proxy_host or any(c in proxy_host for c in "/\\@\r\n\t "):
+            raise ValueError(tr("Proxy : hôte invalide."))
+        if not 1 <= proxy_port <= 65535:
+            raise ValueError(tr("Proxy : port invalide."))
+        if any(c in proxy_user for c in "\r\n") or len(proxy_user) > 255:
+            raise ValueError(tr("Proxy : nom d’utilisateur invalide."))
     return dict(host=host.strip(), user=user.strip(), protocol=protocol, port=port,
                 key_file=str(site.get("key_file", "")), remember=bool(site.get("remember", False)),
                 name=str(site.get("name", "")).strip() or host.strip(),
@@ -28,7 +44,10 @@ def normalize_profile(site: dict) -> dict:
                 remote_directory=str(site.get("remote_directory", "")),
                 timeout=max(5, min(300, int(site.get("timeout", 20)))),
                 passive=site.get("passive", True) not in (False, "false", "0", 0),
-                encoding=normalize_encoding(site.get("encoding", "auto")))
+                encoding=normalize_encoding(site.get("encoding", "auto")),
+                proxy_type=proxy_type, proxy_host=proxy_host, proxy_port=proxy_port, proxy_user=proxy_user,
+                use_agent=site.get("use_agent", False) not in (False, None, "false", "0", 0),
+                time_offset=normalize_offset(site.get("time_offset")))
 
 
 def profile_for(connection: Connection) -> dict:
@@ -103,6 +122,22 @@ def store_credential(connection: Connection) -> None:
         keyring.set_password("SMFTP", connection.identity, connection.password)
     elif keyring.get_password("SMFTP", connection.identity) is not None:
         keyring.delete_password("SMFTP", connection.identity)
+
+
+def proxy_key(identity_text: str) -> str:
+    """Vault entry of a profile's proxy password."""
+    return identity_text + "#proxy"
+
+
+def store_proxy_credential(connection: Connection) -> None:
+    """The proxy password lives in the vault only (never in sites.json): saved when
+    given for a profile with a proxy account, removed otherwise."""
+    import keyring
+    key = proxy_key(connection.identity)
+    if connection.proxy_type != "none" and connection.proxy_user and connection.proxy_password:
+        keyring.set_password("SMFTP", key, connection.proxy_password)
+    elif keyring.get_password("SMFTP", key) is not None:
+        keyring.delete_password("SMFTP", key)
 
 
 @dataclass

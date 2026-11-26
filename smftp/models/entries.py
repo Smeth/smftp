@@ -22,6 +22,32 @@ ENCODINGS = {"auto": "Automatique (UTF-8, sinon Latin-1)", "utf-8": "UTF-8",
              "gbk": "GBK (chinois simplifié)", "big5": "Big5 (chinois traditionnel)"}
 
 
+# Proxy kinds: stored value -> label, shown through proxy_label().
+PROXY_TYPES = {"none": "Aucun", "socks5": "SOCKS5", "http": "HTTP CONNECT"}
+DEFAULT_PROXY_PORTS = {"none": 1080, "socks5": 1080, "http": 8080}
+
+
+def proxy_label(kind: str) -> str:
+    """Label of a proxy kind shown to the user, in the interface language."""
+    return tr("Aucun") if kind == "none" else PROXY_TYPES.get(kind, kind)
+
+
+def normalize_offset(value) -> int | None:
+    """Server time offset in minutes (-24 h to +24 h); None means automatic."""
+    if value is None or value == "" or value == "auto":
+        return None
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(-1440, min(1440, minutes))
+
+
+def format_offset(minutes: int) -> str:
+    sign = "+" if minutes >= 0 else "−"
+    return f"UTC{sign}{abs(minutes) // 60:02d}:{abs(minutes) % 60:02d}"
+
+
 def normalize_encoding(value) -> str:
     """A codec Python knows, else "auto"."""
     import codecs
@@ -93,6 +119,15 @@ class Connection:
     timeout: int = 20
     passive: bool = True  # FTP / FTPS data channel: passive (PASV) or active (PORT).
     encoding: str = "auto"  # FTP / FTPS file names; see ENCODINGS.
+    # Proxy in front of the server: "none", "socks5" or "http" (HTTP CONNECT).
+    proxy_type: str = "none"
+    proxy_host: str = ""
+    proxy_port: int = 1080
+    proxy_user: str = ""
+    proxy_password: str = field(default="", repr=False)  # Vault only, never in sites.json.
+    use_agent: bool = False  # SFTP / SSH: also offer the keys of Pageant or the OpenSSH agent.
+    # FTP LIST times: server clock minus UTC, in minutes; None = detected with MDTM.
+    time_offset: int | None = None
 
     @property
     def identity(self) -> str:

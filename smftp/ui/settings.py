@@ -47,6 +47,11 @@ class SettingsDialog(QDialog):
                                        "Sans prise en charge par le serveur, seule la taille est vérifiée."))
         self.verify.setChecked(settings.value("verify_checksum", True, type=bool))
         layout.addRow(self.verify)
+        self.mark_downloads = QCheckBox(self.tr("Marquer les fichiers téléchargés comme provenant d’Internet"))
+        self.mark_downloads.setToolTip(self.tr("Windows SmartScreen et le mode protégé d’Office traitent alors ces fichiers "
+                                               "comme ceux téléchargés par un navigateur."))
+        self.mark_downloads.setChecked(settings.value("mark_downloads", True, type=bool))
+        layout.addRow(self.mark_downloads)
         self.notifications = QCheckBox(self.tr("Notifications système de fin de transfert"))
         self.notifications.setChecked(settings.value("notifications", True, type=bool))
         layout.addRow(self.notifications)
@@ -126,3 +131,4 @@ class SettingsDialog(QDialog):
                 QMessageBox.warning(self, self.tr("Démarrage avec Windows"),
                                     self.tr("Windows a refusé ce réglage. Vérifiez les droits de votre compte."))
         settings.setValue("verify_checksum", self.verify.isChecked())
+        settings.setValue("mark_downloads", self.mark_downloads.isChecked())
