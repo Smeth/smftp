@@ -1,6 +1,6 @@
 # SMFTP 1.1
 
-Version actuelle : **1.1.0**. Client de transfert de bureau encore jeune : les défauts relevés par l’audit du 9 novembre 2026 sont corrigés et couverts par des tests (voir [docs/AUDIT_2026-11-09.md](docs/AUDIT_2026-11-09.md) pour le constat d’origine).
+Version actuelle : **1.1.0**. Les défauts relevés par l’audit du 9 novembre 2026 sont corrigés et couverts par des tests (voir [docs/AUDIT_2026-11-09.md](docs/AUDIT_2026-11-09.md) pour le constat d’origine). Données personnelles : voir la [politique de confidentialité](docs/CONFIDENTIALITE.md).
 
 Client de bureau natif Python / PySide6, en français. Le design reprend la lisibilité de Cyberduck, l’explorateur à deux panneaux de Transmit et la barre latérale, les onglets et les accents bleus de VS Code. Il ne réutilise pas leurs marques ni leurs ressources graphiques.
 
@@ -100,7 +100,26 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Distribution github
 
 `-Distribution` choisit le canal : `github` (par défaut) et `uptodown` gardent **Aide → Rechercher les mises à jour** ; `store` le retire, car le Microsoft Store met lui-même à jour les applications qu’il installe.
 
+Le build désactive UPX (souvent pris pour un virus par les antivirus), retire les bibliothèques Qt inutilisées (QML, Quick, PDF, clavier virtuel, OpenGL logiciel : environ 38 Mo), écrit les informations de version de l’exécutable, puis lance `SMFTP.exe --smoke-test` : une bibliothèque manquante fait échouer le build.
+
 Résultat : `dist/SMFTP/SMFTP.exe`, avec les licences dans `dist/SMFTP/licenses`. Distribuer **tout le dossier**. Le mode `--onedir` est volontaire : Qt, PySide6 et paramiko (LGPL) restent des fichiers séparés et remplaçables. Ne pas le remplacer par `--onefile` pour une distribution publique. Compiler séparément sur chaque OS ; sous Linux / macOS, le séparateur de `--add-data` est `:`.
+
+## Publication
+
+`package.ps1` construit une version prête à publier :
+
+```powershell
+# Uptodown / GitHub : installeur Inno Setup 6 et archive portable, signés si un certificat est fourni
+.\package.ps1 -Target uptodown -CertificateThumbprint <empreinte du certificat de signature de code>
+
+# Microsoft Store : paquet MSIX (signé par le Store) ; valeurs de Partner Center > Identité du produit
+.\package.ps1 -Target store -IdentityName <Package/Identity/Name> -Publisher "CN=<…>" -PublisherDisplayName <nom d’éditeur>
+```
+
+- L’installeur ([installer/smftp.iss](installer/smftp.iss)) installe par utilisateur, sans droits administrateur, et conserve profils et mots de passe à la désinstallation. Il nécessite Inno Setup 6 (`winget install JRSoftware.InnoSetup`).
+- Sans signature, Windows SmartScreen avertit au premier lancement de l’installeur Uptodown / GitHub. Le paquet MSIX n’a pas besoin de signature : le Store le signe.
+- Politique de confidentialité exigée par le Store : [docs/CONFIDENTIALITE.md](docs/CONFIDENTIALITE.md). Indiquer son adresse publique dans Partner Center.
+- Langue à déclarer sur les fiches : français uniquement.
 
 ## Licence
 

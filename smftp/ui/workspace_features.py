@@ -620,8 +620,10 @@ class WorkspaceFeatures:
         box = QMessageBox(self)
         box.setWindowTitle(self.tr("À propos de SMFTP"))
         box.setTextFormat(Qt.TextFormat.RichText)
-        box.setText(self.tr("<b>SMFTP %s</b><br>Client FTP, FTPS et SFTP pour le bureau.<br><br>"
+        box.setText(self.tr("<b>SMFTP %s</b><br>Client FTP, FTPS, SFTP et SSH pour le bureau.<br><br>"
                             "Code source : <a href=\"https://github.com/Smeth/smftp\">github.com/Smeth/smftp</a><br>"
+                            "<a href=\"https://github.com/Smeth/smftp/blob/main/docs/CONFIDENTIALITE.md\">Politique de confidentialité</a> : "
+                            "SMFTP ne collecte aucune donnée.<br>"
                             "Licence : <a href=\"https://polyformproject.org/licenses/noncommercial/1.0.0\">PolyForm Noncommercial 1.0.0</a> — "
                             "usage non commercial libre ; usage commercial sur autorisation.<br>"
                             "Copyright © 2026 Smeth.<br><br>"

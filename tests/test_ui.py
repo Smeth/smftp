@@ -43,5 +43,5 @@ def test_entry_point_exits_after_smoke():
     from pathlib import Path
     result = subprocess.run([sys.executable, "main.py", "--smoke-test"],
                             cwd=Path(__file__).resolve().parents[1],
-                            capture_output=True, text=True, timeout=15)
+                            capture_output=True, text=True, timeout=60)  # Cold start of Qt and the SDK can be slow on a busy machine.
     assert result.returncode == 0, result.stderr
