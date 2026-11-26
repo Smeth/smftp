@@ -1,7 +1,7 @@
 """Main desktop workspace."""
 from pathlib import Path
 import posixpath
-from PySide6.QtCore import Qt, Signal, QThread, QSettings, QTimer, QFileSystemWatcher, QUrl
+from PySide6.QtCore import Qt, Signal, QSettings, QTimer, QFileSystemWatcher, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLabel,
@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, Q
                                QPlainTextEdit, QMessageBox, QFrame, QMenu, QInputDialog, QFileDialog, QApplication)
 from smftp.ui.explorer import Explorer
 from smftp.ui.connection_dialog import ConnectionDialog
-from smftp.workers.session import Session
 from smftp.utils.storage import data_dir, load_sites, save_sites
 from smftp.ui.transfers import Transfers
 from smftp.workers.transfer import Transfer
@@ -17,6 +16,7 @@ from smftp.core.errors import ErrorInfo, describe_error, redact
 from smftp.utils.profiles import profile_for, merge_profiles, normalize_profile, store_credential, store_proxy_credential, identity, read_profiles, XMLCorrectionRequired
 from smftp.ui.workspace_features import WorkspaceFeatures
 from smftp.ui.navigation import NavigationFeatures
+from smftp.ui.remote_tabs import RemoteTabsFeatures
 from smftp.models.entries import protocol_label, is_terminal, uses_ssh
 from smftp.ui.icons import resize_within_screen
 
@@ -45,7 +45,7 @@ def scale_font_sizes(sheet: str, base_points: float | None = None) -> str:
     return re.sub(r"font-size:\s*(\d+(?:\.\d+)?)px", points, sheet)
 
 
-class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
+class MainWindow(RemoteTabsFeatures, WorkspaceFeatures, NavigationFeatures, QMainWindow):
     connect_requested = Signal(object)
     list_requested = Signal(str)
     disconnect_requested = Signal()
@@ -59,9 +59,6 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
         self.setWindowTitle(self.base_title)
         self.setMinimumSize(940, 620)
         self.fit_to_screen()
-        self.connection = None
-        self.online = False
-        self.busy = False
         self.closing = False
         self.settings = QSettings()
         self.edit_downloads = {}
@@ -140,21 +137,12 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
         local_default = self.settings.value("local_directory", "")
         if local_default:
             self.local.navigate(local_default)
-        self.remote = Explorer(remote=True)
-        self.remote.requested.connect(self.request_listing)
-        self.remote.dropped.connect(lambda paths, target, source: self.handle_drop(paths, target, source, True))
         self.local.dropped.connect(lambda paths, target, source: self.handle_drop(paths, target, source, False))
         self.local.context_requested.connect(lambda point: self.context_menu(self.local, point))
-        self.remote.context_requested.connect(lambda point: self.context_menu(self.remote, point))
-        # Disconnecting belongs to the server panel, next to its status.
-        self.disconnect_button = QPushButton(self.tr("Déconnecter"))
-        self.disconnect_button.setObjectName("compact")
-        self.disconnect_button.setFixedHeight(24)
-        self.disconnect_button.setEnabled(False)
-        self.disconnect_button.clicked.connect(self.disconnect_or_cancel)
-        self.remote.title_row.addWidget(self.disconnect_button)
+        # One tab per open server, each with its own file panel, session and thread
+        # (see remote_tabs.py). Disconnecting belongs to each server panel, next to its status.
         panels.addWidget(self.local)
-        panels.addWidget(self.remote)
+        panels.addWidget(self.build_remote_tabs())
         panels.setSizes([530, 530])
         main.addWidget(panels)
         main.setStretchFactor(0, 3)
@@ -211,27 +199,6 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
         from smftp.ui.explorer import size_label
         self.speed_label = QLabel(f"{size_label(0)}/s")
         self.statusBar().addPermanentWidget(self.speed_label)
-        self.thread = QThread(self)
-        self.session = Session()
-        self.session.moveToThread(self.thread)
-        self.connect_requested.connect(self.session.connect_to)
-        self.list_requested.connect(self.session.list_path)
-        self.disconnect_requested.connect(self.session.close)
-        self.operation_requested.connect(self.session.operate)
-        self.session.operated.connect(self.operation_completed)
-        self.inspect_requested.connect(self.session.inspect_path)
-        self.command_requested.connect(self.session.command)
-        self.session.inspected.connect(self.inspected_file)
-        self.session.inspect_failed.connect(self.inspection_failed)
-        self.session.move_conflict.connect(self.move_conflict)
-        self.session.connected.connect(self.on_connected)
-        self.session.progress.connect(self.log)
-        self.session.listed.connect(self.on_listed)
-        self.session.failed.connect(self.on_session_error)
-        self.session.host_unknown.connect(self.confirm_host)
-        self.session.disconnected.connect(self.on_disconnected)
-        self.thread.finished.connect(self.session.deleteLater)
-        self.thread.finished.connect(self.finish_close)
         self.file_shortcuts = []
         for text, key, callback in [("Actualiser", "F5", self.refresh),
                                      ("Rechercher", "Ctrl+F", self.focus_search),
@@ -262,7 +229,6 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
         self.initialize_features()
         from smftp.ui.scheduler import Scheduler
         self.scheduler = Scheduler(self)
-        self.thread.start()
         self.log(self.tr("Bienvenue. Ouvrez une connexion ou parcourez vos fichiers locaux."))
 
     def focus_search(self):
@@ -356,18 +322,27 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
     def clear_log(self):
         self.logs.clear()
 
+    def known_secrets(self):
+        """Passwords to hide from the log and messages: those of every open server."""
+        tabs = self.all_remote_tabs() if hasattr(self, "remote_tabs") else []
+        return tuple(filter(None, [tab.connection.password for tab in tabs if tab.connection]
+                            + [getattr(self, "last_secret", "")]))
+
     def log(self, message):
         import logging
         from datetime import datetime
-        secrets = tuple(filter(None, [self.connection.password if self.connection else "",
-                                      getattr(self, "last_secret", "")]))
-        message = redact(message, secrets)
+        message = redact(message, self.known_secrets())
+        context = self._context_tab
+        if (context is not None and context.connection is not None
+                and sum(tab.connection is not None for tab in self.remote_tabs) > 1):
+            # Several servers open: say which one this line is about.
+            message = f"[{context.title()}] {message}"
         self.logs.appendPlainText(f"{datetime.now():%H:%M:%S}  {message}")
         self.logs.ensureCursorVisible()
         logging.getLogger("smftp").info(message)
 
     def new_connection(self, site=None):
-        if self.busy:
+        if self.visible_tab.connecting():
             self.statusBar().showMessage(self.tr("Une connexion est déjà en cours : attendez ou cliquez sur « Annuler »."), 5000)
             return
         dialog = ConnectionDialog(self, site)
@@ -379,8 +354,7 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
                 if is_terminal(connection.protocol):
                     self.start_terminal(profile_for(connection), connection)
                     return
-                self.connection = connection
-                self.start_connection()
+                self.open_connection(connection)
 
     def refresh_sites(self):
         self.site_list.clear()
@@ -487,14 +461,18 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
         self.session.abort_connect()
 
     def start_connection(self):
-        self.set_view("files")
-        self.activity_tabs.setCurrentWidget(self.log_panel)
+        # A background tab (automatic reconnection) never takes over the screen.
+        visible = self.is_visible_context()
+        if visible:
+            self.set_view("files")
+            self.activity_tabs.setCurrentWidget(self.log_panel)
         self.busy = True
-        self.connect_button.setEnabled(False)
         self.disconnect_button.setText(self.tr("Annuler"))
         self.disconnect_button.setToolTip(self.tr("Arrêter la tentative de connexion"))
         self.disconnect_button.setEnabled(True)
-        self.statusBar().showMessage(self.tr("Connexion en cours…"))
+        self.update_remote_tab(self.tab)
+        if visible:
+            self.statusBar().showMessage(self.tr("Connexion en cours…"))
         self.log(self.tr("Ouverture d’une connexion %s.") % protocol_label(self.connection.protocol))
         self.connect_requested.emit(self.connection)
 
@@ -504,9 +482,10 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
         self.disconnect_button.setText(self.tr("Déconnecter"))
         self.disconnect_button.setToolTip("")
         self.disconnect_button.setEnabled(True)
-        self.setWindowTitle(f"SMFTP — {self.connection.name or self.connection.host}")
-        self.statusBar().showMessage(self.tr("●  Connecté    •    {host}    •    {protocol}").format(
-            host=self.connection.host, protocol=protocol_label(self.connection.protocol)))
+        if self.is_visible_context():
+            self.setWindowTitle(f"SMFTP — {self.connection.name or self.connection.host}")
+            self.statusBar().showMessage(self.tr("●  Connecté    •    {host}    •    {protocol}").format(
+                host=self.connection.host, protocol=protocol_label(self.connection.protocol)))
         self.log(self.tr("Connexion établie. Lecture du dossier distant…"))
         self.record_recent_connection()
 
@@ -518,7 +497,7 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
     def on_listed(self, path, entries):
         self.busy = False
         self.retry_count = 0
-        self.connect_button.setEnabled(True)
+        self.update_connect_button()
         self.remote.set_entries(path, entries)
         self.log(self.tr("Dossier distant chargé : %n élément(s).", "", len(entries)))
 
@@ -526,6 +505,7 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
         """The session refused to move onto an existing destination: ask explicitly."""
         import posixpath
         self.busy = False
+        self.show_remote_tab(self.tab)  # The question is about the server on screen.
         answer = QMessageBox.question(self, self.tr("Destination existante"),
             self.tr("« %s » existe déjà dans %s.\n\nRemplacer ce fichier par « %s » ? Le fichier remplacé sera perdu.")
             % (posixpath.basename(target), posixpath.dirname(target) or "/", posixpath.basename(source)),
@@ -550,21 +530,24 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
             self.transfers.add(Transfer(task.connection, task.local, destination, True, directory), transient=True)
         if id(task) in self.drag_downloads:
             connection_id, remote, local, metadata = self.drag_downloads.pop(id(task))
-            if self.connection and self.connection.identity == connection_id:
-                self.remote.external_cache[remote] = local
-                self.remote.external_metadata[remote] = metadata
+            tab = self.find_remote_tab(connection_id)  # The tab of that server, on screen or not.
+            if tab is not None:
+                tab.explorer.external_cache[remote] = local
+                tab.explorer.external_metadata[remote] = metadata
                 self.log(self.tr("Copie prête : vous pouvez maintenant glisser %s vers l’Explorateur Windows.") % Path(local).name)
         if id(task) in self.edit_downloads:
             record = self.edit_downloads.pop(id(task))
             self.open_downloaded(record)
         if id(task) in self.edit_uploads:
             record = self.edit_uploads.pop(id(task))
-            if self.online and self.connection and self.connection.identity == record["connection"].identity:
+            tab = self.find_remote_tab(record["connection"].identity, online=True)
+            if tab is not None:
                 record["refresh_baseline"] = True
-                self.request_inspection(record)
+                with self.tab_context(tab):
+                    self.request_inspection(record)
             else:
-                # The browsing session now targets another server: never inspect the
-                # same path there. The next save will ask before overwriting.
+                # No open tab browses that server any more: never inspect the
+                # same path elsewhere. The next save will ask before overwriting.
                 record["baseline_unknown"] = True
                 self.edit_sent(record)
         self.refresh()
@@ -1299,7 +1282,9 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
 
     def save_remote(self, record):
         record["unsent"] = True
-        if not self.online or record["connection"].identity != self.connection.identity:
+        # The inspection goes through the tab of the file's own server, even in the background.
+        tab = self.find_remote_tab(record["connection"].identity, online=True)
+        if tab is None:
             self.on_error(self.tr("Reconnectez le serveur d’origine avant d’envoyer ce fichier."))
             return
         # A new save supersedes a failed upload of the same document.
@@ -1313,7 +1298,8 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
             record["save_again"] = True
             self.log(self.tr("Un envoi est déjà en cours pour %s : la nouvelle version sera envoyée ensuite.") % record["remote"])
             return
-        self.request_inspection(record)
+        with self.tab_context(tab):
+            self.request_inspection(record)
 
     def request_inspection(self, record):
         """Inspect the remote file of this edit record on its own server only."""
@@ -1366,10 +1352,12 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
     def on_disconnected(self):
         self.online = False
         self.update_site_states()
-        self.pending_saves.clear()
+        # Inspections sent through this session will not be answered.
+        for token in self.tab.tokens:
+            self.pending_saves.pop(token, None)
+        self.tab.tokens.clear()
         self.disconnect_button.setText(self.tr("Déconnecter"))
         self.disconnect_button.setEnabled(False)
-        self.setWindowTitle(self.base_title)
         self.remote.view.clear()
         self.remote.icons.clear()
         self.remote.last_entries = []
@@ -1378,6 +1366,9 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
         self.remote.empty.show()
         self.remote.reset_history()
         self.remote.count.setText(self.tr("Non connecté"))
+        if not self.is_visible_context():
+            return  # Its tab shows the state; the screen belongs to another server.
+        self.setWindowTitle(self.base_title)
         running = self.transfers.pending_count()
         if running:
             self.statusBar().showMessage(self.tr("●  Déconnecté    •    %n transfert(s) en file sur leurs propres connexions", "", running))
@@ -1387,7 +1378,7 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
     def on_session_error(self, error):
         # Full diagnostics arrive in the preceding progress signal.
         self.busy = False
-        self.connect_button.setEnabled(True)
+        self.update_connect_button()
         if not self.online:
             self.disconnect_button.setText(self.tr("Déconnecter"))
             self.disconnect_button.setEnabled(False)
@@ -1395,7 +1386,11 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
         summary = error.summary if isinstance(error, ErrorInfo) else str(error)
         if not isinstance(error, ErrorInfo):
             self.log(self.tr("Erreur : %s") % summary)
-        self.statusBar().showMessage(self.tr("Erreur : %s") % summary)
+        if self.is_visible_context():
+            self.statusBar().showMessage(self.tr("Erreur : %s") % summary)
+        else:
+            self.statusBar().showMessage(self.tr("{server} — erreur : {summary}").format(
+                server=self.tab.title(), summary=summary), 8000)
         if (isinstance(error, ErrorInfo) and error.retryable and
             self.settings.value("auto_reconnect", False, type=bool) and
             not self.closing and self.retry_count < 3):
@@ -1406,10 +1401,9 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
 
     def on_error(self, message):
         self.busy = False
-        self.connect_button.setEnabled(True)
+        self.update_connect_button()
         info = message if isinstance(message, ErrorInfo) else ErrorInfo(str(message), "")
-        secrets = tuple(filter(None, [self.connection.password if self.connection else "",
-                                      getattr(self, "last_secret", "")]))
+        secrets = self.known_secrets()
         summary, details = redact(info.summary, secrets), redact(info.details, secrets)
         self.log(summary + ("\n" + details if details else ""))
         self.activity_tabs.setCurrentWidget(self.log_panel)
@@ -1425,7 +1419,8 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
 
     def confirm_host(self, error):
         self.busy = False
-        self.connect_button.setEnabled(True)
+        self.update_connect_button()
+        self.show_remote_tab(self.tab)  # The fingerprint question is about the server on screen.
         if self.trust_host(error):
             self.start_connection()
 
@@ -1494,10 +1489,13 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
             import sys
             terminals = len(self.terminal.sessions())
             scheduled = self.scheduler.enabled_count()
-            if "--smoke-test" not in sys.argv and (self.online or self.transfers.active() or dirty or unsent
-                                                   or terminals or scheduled):
+            servers = sum(tab.online or tab.busy for tab in self.remote_tabs)
+            if "--smoke-test" not in sys.argv and (any(tab.online for tab in self.remote_tabs) or self.transfers.active()
+                                                   or dirty or unsent or terminals or scheduled):
                 message = self.tr("Voulez-vous quitter SMFTP ?")
-                if self.online or self.busy:
+                if servers > 1:
+                    message += self.tr("\nLes connexions aux %n serveurs ouverts seront fermées.", "", servers)
+                elif servers:
                     message += self.tr("\nLa connexion au serveur sera fermée.")
                 if terminals:
                     message += self.tr("\n%n session(s) de terminal seront fermées.", "", terminals)
@@ -1522,11 +1520,13 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
         local_active = any(w.isRunning() for w in getattr(self, "local_workers", []))
         sync_active = self.sync_running() or any(w.isRunning() for w in self.search_workers)
         self.terminal.close_all()
-        if self.thread.isRunning() or self.transfers.active() or local_active or sync_active or self.terminal.running():
+        sessions_running = any(tab.thread.isRunning() for tab in self.all_remote_tabs())
+        if sessions_running or self.transfers.active() or local_active or sync_active or self.terminal.running():
             event.ignore()
             if not self.closing:
                 self.closing = True
-                self.retry_timer.stop()
+                for tab in self.all_remote_tabs():
+                    tab.retry_timer.stop()
                 self.hide()
                 self.transfers.stop_all()
                 self.scheduler.stop()
@@ -1536,9 +1536,13 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
                 for worker in (getattr(self, "sync_worker", None), getattr(self, "sync_deleter", None)):
                     if worker:
                         worker.requestInterruption()
-                # Quit after queued operations and cleanup have completed.
-                self.session.disconnected.connect(self.thread.quit)
-                self.disconnect_requested.emit()
+                # Each server tab quits after its queued operations and cleanup have completed.
+                for tab in self.all_remote_tabs():
+                    if tab.connecting():
+                        tab.session.abort_connect()
+                    if not tab.removed:  # A closed tab is already shutting down.
+                        tab.session.disconnected.connect(tab.thread.quit)
+                        tab.disconnect_requested.emit()
                 self.close_timer = QTimer(self)
                 self.close_timer.timeout.connect(self.finish_close)
                 self.close_timer.start(100)
@@ -1547,7 +1551,8 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
 
     def finish_close(self):
         sync_active = self.sync_running() or any(w.isRunning() for w in self.search_workers)
-        if (self.closing and not self.thread.isRunning() and not self.transfers.active() and not sync_active
+        sessions_running = any(tab.thread.isRunning() for tab in self.all_remote_tabs())
+        if (self.closing and not sessions_running and not self.transfers.active() and not sync_active
                 and not self.terminal.running() and not any(w.isRunning() for w in getattr(self, "local_workers", []))):
             if hasattr(self, "close_timer"):
                 self.close_timer.stop()

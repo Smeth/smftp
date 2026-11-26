@@ -124,9 +124,7 @@ class NavigationFeatures:
             lambda checked: self.sync_navigation_button.setChecked(self.sync_navigation_action.isChecked()))
         self.remote.title_row.insertWidget(self.remote.title_row.count() - 1, self.sync_navigation_button)
         self.local.path_changed.connect(lambda path: self.follow_navigation(path, False))
-        self.remote.path_changed.connect(lambda path: self.follow_navigation(path, True))
-        self.session.failed.connect(self.synchronized_listing_failed)
-        self.session.disconnected.connect(self.stop_synchronized_navigation)
+        # The server side follows the tab on screen (RemoteTab.on_path_changed, on_failed, on_disconnected).
 
     # ----- bookmarks -----
     def current_bookmarks(self):
@@ -334,7 +332,7 @@ class NavigationFeatures:
     def quick_connect(self):
         if self.closing:
             return
-        if self.busy:
+        if self.visible_tab.connecting():
             self.statusBar().showMessage(self.tr("Une connexion est déjà en cours : attendez ou cliquez sur « Annuler »."), 5000)
             return
         connection, problem = self.quick_connection()
@@ -347,11 +345,8 @@ class NavigationFeatures:
             from smftp.utils.profiles import profile_for
             self.start_terminal(profile_for(connection), connection)
             return
-        # No profile is created: the connection lives until it is closed.
-        self.retry_timer.stop()
-        self.retry_count = 0
-        self.connection = connection
-        self.start_connection()
+        # No profile is created: the connection lives until its tab is closed.
+        self.open_connection(connection)
 
     def remember_quick_address(self, connection):
         address = history_address(connection)

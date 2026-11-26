@@ -484,9 +484,11 @@ class Transfers(QWidget):
             if record["state"] in ("pending", "paused_pending"):
                 record["state"] = "Annulé"
 
-    def pending_count(self):
-        """Jobs running or waiting; they use their own connections, not the browsing session."""
-        return sum(r["state"] in ("pending", "active") for r in self.records)
+    def pending_count(self, identity=None):
+        """Jobs running or waiting; they use their own connections, not the browsing session.
+        With ``identity``: only the jobs of that server."""
+        return sum(r["state"] in ("pending", "active") and (identity is None or r["task"].connection.identity == identity)
+                   for r in self.records)
 
     def active(self):
         return any(r["worker"].isRunning() for r in self.records)
