@@ -25,6 +25,11 @@ Cochez « Mémoriser » pour garder le mot de passe dans le coffre-fort Windows.
 <h2>Fichiers</h2>
 <p>À gauche votre ordinateur, à droite le serveur. Glissez des fichiers d’un panneau à l’autre pour les copier.
 Clic droit : télécharger, renommer, supprimer, permissions (aussi sur tout le contenu d’un dossier), modifier un fichier texte.</p>
+<h2>Plusieurs serveurs en onglets</h2>
+<p>Chaque serveur s’ouvre dans son propre onglet au-dessus du panneau serveur (jusqu’à 8). Un double-clic sur un autre
+serveur de « Mes serveurs », le formulaire de connexion ou la connexion rapide ouvrent un nouvel onglet ; un double-clic sur
+un serveur déjà ouvert affiche son onglet. La croix de l’onglet ou <b>Fichier → Déconnecter</b> ferme seulement ce serveur.
+Le journal indique le serveur concerné par chaque ligne.</p>
 <h2>Signets, connexion rapide, navigation synchronisée</h2>
 <p><b>Signets → Ajouter un signet</b> (Ctrl+D) retient les deux dossiers ouverts pour le serveur connecté ; un clic sur le
 signet les rouvre ensemble. La <b>barre de connexion rapide</b> (Affichage) se connecte sans créer de profil : hôte ou adresse
@@ -65,6 +70,11 @@ Tick “Remember” to keep the password in the Windows vault. After that, doubl
 <h2>Files</h2>
 <p>Your computer on the left, the server on the right. Drag files from one panel to the other to copy them.
 Right click: download, rename, delete, permissions (also on all the contents of a folder), edit a text file.</p>
+<h2>Several servers in tabs</h2>
+<p>Each server opens in its own tab above the server panel (up to 8). Double-clicking another server in
+“My servers”, the connection form or quick connect open a new tab; double-clicking a server that is already open
+shows its tab. The tab's cross or <b>File → Disconnect</b> closes only that server.
+The log names the server each line is about.</p>
 <h2>Bookmarks, quick connect, synchronized browsing</h2>
 <p><b>Bookmarks → Add a bookmark</b> (Ctrl+D) remembers the two open folders for the connected server; clicking the
 bookmark opens both again. The <b>quick connect bar</b> (View) connects without creating a profile: host or full address
@@ -107,16 +117,12 @@ class WorkspaceFeatures:
     def initialize_features(self):
         self.clipboard_files = None
         QApplication.clipboard().dataChanged.connect(self.clear_file_clipboard)
-        for panel in (self.local, self.remote):
-            panel.view.clicked.connect(lambda index, p=panel: setattr(self, "last_panel", p))
-            panel.icons.clicked.connect(lambda index, p=panel: setattr(self, "last_panel", p))
+        # Each server tab wires its own panel (remote_tabs.py).
+        self.local.view.clicked.connect(lambda index: setattr(self, "last_panel", self.local))
+        self.local.icons.clicked.connect(lambda index: setattr(self, "last_panel", self.local))
         self.pending_remote_copies = {}
         self.drag_downloads = {}
         self.search_workers = []
-        self.retry_count = 0
-        self.retry_timer = QTimer(self)
-        self.retry_timer.setSingleShot(True)
-        self.retry_timer.timeout.connect(self.retry_connection)
         self.transfers.concurrency.valueChanged.connect(lambda value: self.settings.setValue("concurrency", value))
         self.transfers.speed.setValue(self.settings.value("speed_limit", 0, type=int))
         self.transfers.speed.valueChanged.connect(self.update_speed_limit)
@@ -180,7 +186,7 @@ class WorkspaceFeatures:
         self.add_command(display, "Vue Terminal", lambda: self.set_view("terminal"))
         display.addSeparator()
         display.addAction(self.local_hidden_action)
-        self.remote_hidden_action = self.add_command(display, "Fichiers distants cachés", self.remote.show_hidden, checkable=True)
+        self.remote_hidden_action = self.add_command(display, "Fichiers distants cachés", self.show_remote_hidden, checkable=True)
         self.icon_view_action = self.add_command(display, "Vue en icônes", self.set_icon_views, checkable=True)
         self.vertical_action = self.add_command(display, "Panneaux verticaux", lambda checked: self.panel_splitter.setOrientation(
             Qt.Orientation.Vertical if checked else Qt.Orientation.Horizontal), checkable=True)
@@ -192,7 +198,8 @@ class WorkspaceFeatures:
         self.add_command(display, "Thème clair / sombre", self.toggle_theme)
         self.add_command(self.tools_menu, "Tâches planifiées…", self.show_schedule, "Ctrl+Shift+P")
         self.add_command(self.tools_menu, "Assistant IA", self.show_assistant, "Ctrl+Shift+I")
-        self.add_command(self.tools_menu, "Commande FTP…", self.ftp_command)
+        self.ftp_command_action = self.add_command(self.tools_menu, "Commande FTP…", self.ftp_command)
+        self.ftp_command_action.setEnabled(False)  # Follows the server tab on screen.
         help_menu = self.menuBar().addMenu(self.tr("Aide"))
         self.add_command(help_menu, "Documentation et raccourcis", self.show_help, "F1")
         self.add_command(help_menu, "Diagnostic", self.show_diagnostic)
@@ -212,7 +219,6 @@ class WorkspaceFeatures:
             self.update_notice_button.clicked.connect(lambda: self.show_update_dialog(self.pending_update))
             self.statusBar().addPermanentWidget(self.update_notice_button)
         self.add_command(help_menu, "À propos", self.show_about)
-        self.remote.file_opened.connect(lambda: self.edit_remote(False))
         self.initialize_navigation()
         order = ["Fichier", "Édition", "Affichage", "Serveurs", "Signets", "Transferts", "Outils", "Aide"]
         actions = list(self.menuBar().actions())
@@ -271,10 +277,11 @@ class WorkspaceFeatures:
             self.open_terminal(site)
             return
         connection = Connection(**normalize_profile(site))
-        if self.online and self.connection and self.connection.identity == connection.identity:
+        existing = self.find_remote_tab(connection.identity)
+        if existing is not None and (existing.online or existing.busy):
+            # Already open in a tab: show it instead of connecting again.
+            self.show_remote_tab(existing)
             self.set_view("files")
-            return
-        if self.busy:
             return
         secret = self.stored_secret(connection)
         has_key = uses_ssh(connection.protocol) and bool(connection.key_file)
@@ -282,36 +289,11 @@ class WorkspaceFeatures:
             self.new_connection(site)
             return
         connection.password = secret or ""
-        self.retry_timer.stop()
-        self.retry_count = 0
-        self.connection = connection
-        self.start_connection()
+        self.open_connection(connection)
 
     def disconnect_session(self):
-        running = self.transfers.pending_count()
-        if running:
-            from PySide6.QtWidgets import QMessageBox
-            box = QMessageBox(self)
-            box.setWindowTitle(self.tr("Déconnecter"))
-            box.setIcon(QMessageBox.Icon.Question)
-            box.setText(self.tr("%n transfert(s) en cours ou en attente.", "", running))
-            box.setInformativeText(self.tr("Les transferts utilisent leurs propres connexions : déconnecter la navigation ne les arrête pas."))
-            only = box.addButton(self.tr("Déconnecter, transferts continuent"), QMessageBox.ButtonRole.AcceptRole)
-            pause = box.addButton(self.tr("Déconnecter et mettre les transferts en pause"), QMessageBox.ButtonRole.DestructiveRole)
-            box.addButton(QMessageBox.StandardButton.Cancel)
-            box.setDefaultButton(only)
-            box.exec()
-            clicked = box.clickedButton()
-            if clicked is pause:
-                self.transfers.pause_all()
-                self.log(self.tr("Transferts mis en pause. Transferts → Reprendre tout pour continuer."))
-            elif clicked is not only:
-                return
-            else:
-                self.log(self.tr("Navigation déconnectée ; %n transfert(s) continuent.", "", running))
-        self.retry_timer.stop()
-        self.retry_count = 0
-        self.disconnect_requested.emit()
+        """« Déconnecter »: close the tab of the current server (the last tab stays, empty)."""
+        self.close_remote_tab(self.tab)
 
     def reconnect(self):
         if self.connection and not self.busy:
@@ -324,7 +306,7 @@ class WorkspaceFeatures:
 
     def record_recent_connection(self):
         self.remember_recent(self.connection)
-        if self.connection.local_directory:
+        if self.connection.local_directory and self.is_visible_context():
             self.local.navigate(self.connection.local_directory)
         self.transfers.authorize(self.connection)
 
@@ -355,11 +337,7 @@ class WorkspaceFeatures:
                 self.terminal.current().view.setFocus()
         else:
             self.center.setCurrentWidget(self.files_view)
-            if self.online and self.connection:
-                self.statusBar().showMessage(self.tr("●  Connecté    •    {host}    •    {protocol}").format(
-                    host=self.connection.host, protocol=protocol_label(self.connection.protocol)))
-            else:
-                self.statusBar().showMessage(self.tr("●  Déconnecté"))
+            self.show_remote_state()
         self.update_site_states()
 
     def update_site_states(self):
@@ -371,8 +349,10 @@ class WorkspaceFeatures:
         dark = getattr(self, "dark", True)
         terminal_view = self.center.currentWidget() is self.terminal
         current = self.terminal.current() if terminal_view else None
+        screen = self.visible_tab
         shown = current.identity if current is not None else (
-            self.connection.identity if not terminal_view and self.online and self.connection else None)
+            screen.connection.identity if not terminal_view and screen.online and screen.connection else None)
+        open_servers = {tab.connection.identity for tab in self.remote_tabs if tab.online and tab.connection}
         accent = "#6ea8ff" if dark else "#1f6feb"
         self.site_list.blockSignals(True)
         self.site_list.clearSelection()
@@ -382,7 +362,7 @@ class WorkspaceFeatures:
             key = item.data(Qt.ItemDataRole.UserRole) or (identity(site) if site else "")
             terminal = is_terminal(site.get("protocol", ""))
             sessions = [s for s in self.terminal.sessions() if s.identity == key]
-            open_ = bool(sessions) or bool(self.online and self.connection and self.connection.identity == key)
+            open_ = bool(sessions) or key in open_servers
             item.setIcon(make_icon("terminal" if terminal else "folder", dark, accent if open_ else None))
             font = QFont(item.font())
             font.setBold(open_)
@@ -417,8 +397,7 @@ class WorkspaceFeatures:
             if not self.persist_profile(connection, site) or dialog.save_only:
                 return
             if not uses_ssh(connection.protocol):
-                self.connection = connection
-                self.start_connection()
+                self.open_connection(connection)
                 return
             site = profile_for(connection)
         else:
@@ -751,7 +730,8 @@ class WorkspaceFeatures:
 
     def set_icon_views(self, enabled):
         self.local.set_icon_mode(enabled)
-        self.remote.set_icon_mode(enabled)
+        for tab in self.remote_tabs:
+            tab.explorer.set_icon_mode(enabled)
 
     def show_help(self):
         """Short guide in the window, the full documentation online."""
