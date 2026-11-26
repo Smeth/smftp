@@ -22,7 +22,9 @@ def main() -> None:
     from smftp.utils.storage import acquire_instance_lock
     lock, available = acquire_instance_lock()
     if not available:
-        QMessageBox.information(None, "SMFTP", "SMFTP est déjà ouvert.\n\nUtilisez la fenêtre existante : deux instances écraseraient mutuellement les profils et la file de transferts.")
+        from smftp.utils.storage import ask_running_instance_to_show
+        if not ask_running_instance_to_show():
+            QMessageBox.information(None, "SMFTP", "SMFTP est déjà ouvert.\n\nUtilisez la fenêtre existante : deux instances écraseraient mutuellement les profils et la file de transferts.")
         sys.exit(0)
     logging_available = configure_logging()
     from smftp.utils.storage import clean_stale_temporary
@@ -34,6 +36,8 @@ def main() -> None:
     if not logging_available:
         window.log(window.tr("Le journal sur disque est indisponible. Vérifiez les droits du dossier utilisateur."))
     window.show()
+    from smftp.utils.storage import listen_for_other_instances
+    window.instance_server = listen_for_other_instances(window)
     if window.site_problems:
         for problem in window.site_problems:
             window.log(window.tr("Erreur : ") + problem)

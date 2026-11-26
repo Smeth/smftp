@@ -51,7 +51,13 @@ def breadcrumb_parts(path: str, remote: bool) -> list[tuple[str, str]]:
 
 class EntryItem(QTreeWidgetItem):
     def __lt__(self, other):
-        column = self.treeWidget().sortColumn()
+        tree = self.treeWidget()
+        column = tree.sortColumn()
+        mine, theirs = bool(self.data(0, Qt.ItemDataRole.UserRole + 1)), bool(other.data(0, Qt.ItemDataRole.UserRole + 1))
+        if mine != theirs:
+            # Folders first whatever the order, as in the local panel and Windows Explorer.
+            ascending = tree.header().sortIndicatorOrder() == Qt.SortOrder.AscendingOrder
+            return mine if ascending else theirs
         return self.data(column, Qt.ItemDataRole.UserRole) < other.data(column, Qt.ItemDataRole.UserRole)
 
 
@@ -400,7 +406,9 @@ class Explorer(QWidget):
         self.view.clear()
         self.icons.clear()
         for entry in entries:
-            kind = "Dossier" if entry.is_dir else (Path(entry.name).suffix.lstrip(".").upper() or "Fichier")
+            suffix_label = Path(entry.name).suffix.lstrip(".").upper()
+            # Same wording as the local panel.
+            kind = "Dossier" if entry.is_dir else (f"Fichier {suffix_label}" if suffix_label else "Fichier")
             date = datetime.fromtimestamp(entry.modified).strftime("%d/%m/%Y %H:%M") if entry.modified else "—"
             item = EntryItem([entry.name, "—" if entry.is_dir else size_label(entry.size), kind, date, entry.permissions])
             values = [entry.name.casefold(), entry.size, kind, entry.modified, entry.permissions]
@@ -413,14 +421,13 @@ class Explorer(QWidget):
                 suffix = Path(entry.name).suffix.lower()
                 icon = (QStyle.StandardPixmap.SP_FileDialogContentsView if suffix in (".py", ".js", ".php", ".html", ".json", ".css")
                         else QStyle.StandardPixmap.SP_FileDialogInfoView if suffix in (".png", ".jpg", ".gif", ".webp")
-                        else QStyle.StandardPixmap.SP_DriveHDIcon if suffix in (".zip", ".gz", ".7z", ".tar") else icon)
+                        else icon)
                 item.setIcon(0, self.style().standardIcon(icon))
             self.view.addTopLevelItem(item)
             grid_item = QListWidgetItem(item.icon(0), entry.name)
             grid_item.setData(Qt.ItemDataRole.UserRole, entry.is_dir)
             self.icons.addItem(grid_item)
         self.view.setSortingEnabled(True)
-        self.count.setText(self.tr("%n élément(s)", "", len(entries)))
         self.filter_entries(self.search.text())
         self.select_pending()
 
@@ -448,6 +455,14 @@ class Explorer(QWidget):
             for i in range(self.icons.count()):
                 item = self.icons.item(i)
                 item.setHidden(text.casefold() not in item.text().casefold() or (not self.hidden and item.text().startswith(".")))
+            # The counter matches what is shown: hidden files and filtered names are not counted.
+            shown = sum(not self.view.topLevelItem(i).isHidden() for i in range(self.view.topLevelItemCount()))
+            total = self.view.topLevelItemCount()
+            label = self.tr("%n élément(s)", "", shown)
+            if shown != total:
+                label += self.tr(" sur %1").replace("%1", str(total))
+            if self.position >= 0:
+                self.count.setText(label)
         else:
             self.model.setNameFilters([f"*{text}*"] if text else [])
             self.model.setNameFilterDisables(False)

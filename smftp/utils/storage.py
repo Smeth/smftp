@@ -64,6 +64,53 @@ def clean_stale_temporary(directories=None, older_than: float = 86400) -> int:
     return removed
 
 
+def instance_channel() -> str:
+    """Local socket name of the running SMFTP for this user and data folder."""
+    import hashlib
+    return "smftp-" + hashlib.sha256(str(data_dir()).encode("utf-8")).hexdigest()[:20]
+
+
+def ask_running_instance_to_show() -> bool:
+    """A second launch brings the open window to the front instead of starting again."""
+    from PySide6.QtNetwork import QLocalSocket
+    socket = QLocalSocket()
+    socket.connectToServer(instance_channel())
+    if not socket.waitForConnected(1000):
+        return False
+    socket.write(b"show\n")
+    socket.flush()
+    # Wait for the acknowledgement: disconnecting at once could drop the request.
+    socket.waitForReadyRead(2000)
+    socket.disconnectFromServer()
+    return True
+
+
+def listen_for_other_instances(window):
+    """Running instance: show the window when another launch asks for it."""
+    from PySide6.QtNetwork import QLocalServer
+    server = QLocalServer(window)
+    name = instance_channel()
+    QLocalServer.removeServer(name)  # A crashed instance may have left the name behind.
+    if not server.listen(name):
+        return None
+
+    def accept():
+        while server.hasPendingConnections():
+            connection = server.nextPendingConnection()
+            connection.readyRead.connect(lambda c=connection: reveal(c))
+            connection.disconnected.connect(connection.deleteLater)
+            if connection.bytesAvailable():
+                reveal(connection)  # Already arrived before readyRead was connected.
+
+    def reveal(connection):
+        if bytes(connection.readAll()).strip() == b"show":
+            window.reveal()
+            connection.write(b"ok\n")
+            connection.flush()
+    server.newConnection.connect(accept)
+    return server
+
+
 def configure_logging() -> bool:
     try:
         handler = RotatingFileHandler(data_dir() / "smftp.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")

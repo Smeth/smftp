@@ -24,12 +24,21 @@ class Session(QObject):
         self.client = None
         self.connection = None
         self.operation = "Connexion"
+        self.cancelled = False
+
+    def abort_connect(self) -> None:
+        """Called from the window thread while connect_to() is blocked on the network."""
+        self.cancelled = True
+        client = self.client
+        if client is not None:
+            client.abort()
 
     @Slot(object)
     def connect_to(self, connection: Connection) -> None:
         self.close()
         self.connection = connection
         self.operation = "Connexion"
+        self.cancelled = False
         try:
             hosts = data_dir() / "known_hosts"
             hosts.touch(exist_ok=True)
@@ -44,6 +53,11 @@ class Session(QObject):
             self.host_unknown.emit(error)
         except Exception as error:
             self.close()
+            if self.cancelled:
+                from smftp.core.errors import ErrorInfo
+                self.progress.emit("Statut : connexion annulée.")
+                self.failed.emit(ErrorInfo("Connexion annulée.", ""))
+                return
             self.report(error)
 
     @Slot(str)

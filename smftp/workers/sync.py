@@ -28,6 +28,7 @@ class SyncPlanner(QThread):
     planned = Signal(object)
     failed = Signal(str)
     note = Signal(str)
+    progress = Signal(int)  # Entries examined so far (local, then remote).
 
     def __init__(self, connection, local, remote, upload, parent=None, *, compare_content=False, mirror=False):
         super().__init__(parent)
@@ -57,6 +58,7 @@ class SyncPlanner(QThread):
                         elif entry.is_file(follow_symlinks=False):
                             info = entry.stat(follow_symlinks=False)
                             local_files[key] = (info.st_size, info.st_mtime)
+                        self.count_seen()
             walk(self.local)
             remote_files, remote_dirs, remote_links = {}, set(), set()
 
@@ -76,6 +78,7 @@ class SyncPlanner(QThread):
                         visit(posixpath.join(path, item.name), key, depth + 1)
                     else:
                         remote_files[key] = (item.size, item.modified)
+                    self.count_seen()
             visit(self.remote)
             if self.isInterruptionRequested():
                 return
@@ -117,6 +120,13 @@ class SyncPlanner(QThread):
         finally:
             if client:
                 client.close()
+
+    seen = 0
+
+    def count_seen(self):
+        self.seen += 1
+        if self.seen % 100 == 0:
+            self.progress.emit(self.seen)
 
     def mirror_deletions(self, source, destination, source_dirs, destination_dirs, links, hides_dotfiles=False):
         """Destination extras, minus anything that may still exist in the source.

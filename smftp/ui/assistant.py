@@ -548,8 +548,19 @@ class AssistantSettings(QDialog):
         self.accept()
 
     def done(self, result):
-        if self.lister is not None and self.lister.isRunning():
-            self.lister.wait(6000)
+        lister = self.lister
+        if lister is not None and lister.isRunning():
+            # An unreachable Ollama server may take seconds to answer: close now and let the
+            # reading thread end on its own, detached from this window.
+            for signal in (lister.listed, lister.failed):
+                try:
+                    signal.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+            from PySide6.QtWidgets import QApplication
+            lister.setParent(QApplication.instance())
+            lister.finished.connect(lister.deleteLater)
+            self.lister = None
         super().done(result)
 
 
@@ -702,6 +713,7 @@ class AssistantPanel(QFrame):
         title.setObjectName("paneTitle")
         titles.addWidget(title)
         self.provider = QPushButton()
+        self.provider.setAccessibleName(self.tr("Modèle de l’assistant"))
         self.provider.setObjectName("providerChip")
         self.provider.setToolTip(self.tr("Changer de modèle"))
         self.provider.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -750,6 +762,7 @@ class AssistantPanel(QFrame):
         self.input.textChanged.connect(self.update_buttons)
         row.addWidget(self.input, 1)
         self.send_button = QToolButton()
+        self.send_button.setAccessibleName(self.tr("Envoyer le message"))
         self.send_button.setObjectName("sendButton")
         self.send_button.setIconSize(QSize(18, 18))
         self.send_button.setFixedSize(34, 34)

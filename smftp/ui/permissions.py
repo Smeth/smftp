@@ -58,6 +58,11 @@ class PermissionsDialog(QDialog):
                 box.toggled.connect(self.update_octal)
         self.octal = QLineEdit()
         self.octal.setMaxLength(3)
+        from PySide6.QtCore import QRegularExpression
+        from PySide6.QtGui import QRegularExpressionValidator
+        # Only octal digits can be typed (e.g. 644, 755).
+        self.octal.setValidator(QRegularExpressionValidator(QRegularExpression("[0-7]{0,3}"), self.octal))
+        self.octal.setPlaceholderText("644")
         self.octal.setAccessibleName(self.tr("Permissions en octal"))
         grid.addWidget(QLabel(self.tr("Octal")), 4, 0)
         grid.addWidget(self.octal, 4, 1, 1, 3)
@@ -92,6 +97,11 @@ class PermissionsDialog(QDialog):
         value = self.octal.text()
         if len(value) == 3 and all(c in "01234567" for c in value):
             self.accept()
+            return
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.warning(self, self.tr("Permissions"),
+                            self.tr("Indiquez trois chiffres de 0 à 7, par exemple 644 (fichier) ou 755 (dossier)."))
+        self.octal.setFocus()
 
     def mode(self):
         return self.special | int(self.octal.text(), 8)

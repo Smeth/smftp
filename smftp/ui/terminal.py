@@ -72,6 +72,9 @@ class Screen(pyte.HistoryScreen):
         super().resize(lines, columns)
 
 
+FONT_MIN, FONT_MAX = 7, 28  # Terminal text size range (points).
+
+
 class TerminalView(QWidget):
     """Draws the screen and turns keys, paste and resizes into bytes for the shell."""
     typed = Signal(bytes)
@@ -89,7 +92,8 @@ class TerminalView(QWidget):
         font.setFamilies(["Cascadia Mono", "Consolas", "Courier New"])
         font.setStyleHint(QFont.StyleHint.Monospace)
         font.setFixedPitch(True)
-        font.setPointSize(10)
+        from PySide6.QtCore import QSettings
+        font.setPointSize(max(FONT_MIN, min(FONT_MAX, QSettings().value("terminal_font_size", 10, type=int))))
         self.set_font(font)
         self.colors = PALETTES[bool(dark)]
         self.screen = Screen(80, 24, self.typed.emit)
@@ -329,8 +333,24 @@ class TerminalView(QWidget):
         self.scroll = max(0, min(len(self.screen.history.top), self.scroll + lines))
         self.update()
 
+    def zoom(self, step):
+        """Ctrl+wheel: bigger or smaller text, kept for the next sessions."""
+        from PySide6.QtCore import QSettings
+        size = max(FONT_MIN, min(FONT_MAX, self.term_font.pointSize() + step))
+        if size == self.term_font.pointSize():
+            return
+        font = QFont(self.term_font)
+        font.setPointSize(size)
+        self.set_font(font)
+        QSettings().setValue("terminal_font_size", size)
+        self.fit(self.width(), self.height())
+        self.update()
+
     def wheelEvent(self, event):
         notches = event.angleDelta().y() / 120
+        if notches and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.zoom(1 if notches > 0 else -1)
+            return
         if notches:
             self.scroll_by(int(round(notches * 3)) or (1 if notches > 0 else -1))
 
@@ -497,8 +517,15 @@ class TerminalSession(QWidget):
         if self.worker is not None and self.worker.isRunning():
             if self.state in ("connecting", "open"):
                 return
-            # Previous attempt still closing (e.g. just after an unknown-key prompt): let it end.
-            self.worker.wait(5000)
+            # Previous attempt still closing (e.g. just after an unknown-key prompt): start again
+            # once it has ended, without freezing the window while waiting.
+            if not getattr(self, "restart_pending", False):
+                self.restart_pending = True
+                from PySide6.QtCore import QTimer
+                self.worker.finished.connect(lambda: (setattr(self, "restart_pending", False),
+                                                      QTimer.singleShot(0, self.start)),
+                                             Qt.ConnectionType.SingleShotConnection)
+            return
         self.set_state("connecting")
         self.view.write_notice(self.tr("Connexion SSH à %s@%s:%s…") % (self.connection.user, self.connection.host,
                                                                          self.connection.port), "90")
@@ -659,7 +686,7 @@ class TerminalArea(QWidget):
         index = self.tabs.addTab(session, f"{title} ({same + 1})" if same else title)
         from PySide6.QtCore import QSize
         from smftp.ui.icons import icon_button, make_icon
-        close = icon_button("close", self.tr("Fermer la session (Ctrl+Maj+W)"), lambda: self.close_session(session))
+        close = icon_button("close", self.tr("Fermer la session (Ctrl+Maj+W)"), lambda: self.request_close(session))
         close.setFixedSize(20, 20)
         close.setIconSize(QSize(12, 12))
         close.setIcon(make_icon("close", self.dark))
@@ -725,7 +752,22 @@ class TerminalArea(QWidget):
             self.emptied.emit()
 
     def close_current(self):
-        self.close_session(self.current())
+        self.request_close(self.current())
+
+    def request_close(self, session):
+        """Closing a live session ends what runs in it (nano, a copy…): ask first."""
+        if session is None:
+            return
+        if session.state in ("connecting", "open"):
+            from PySide6.QtWidgets import QMessageBox
+            if QMessageBox.question(
+                    self, self.tr("Fermer la session"),
+                    self.tr("La session sur %1 est ouverte. La fermer arrête les commandes en cours. Fermer ?")
+                    .replace("%1", session.title),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                return
+        self.close_session(session)
 
     def close_all(self):
         for session in self.sessions():

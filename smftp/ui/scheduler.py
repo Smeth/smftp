@@ -463,9 +463,20 @@ class TaskEditor(QDialog):
 
     def choose_local(self):
         if self.kind.currentData() == "upload":
-            path, _ = QFileDialog.getOpenFileName(self, self.tr("Fichier à envoyer"), self.local.text())
-            if not path:
-                path = QFileDialog.getExistingDirectory(self, self.tr("…ou dossier à envoyer"), self.local.text())
+            # Ask first: cancelling the file choice must not open a folder choice.
+            box = QMessageBox(self)
+            box.setWindowTitle(self.tr("Élément à envoyer"))
+            box.setText(self.tr("Envoyer un fichier ou tout un dossier ?"))
+            file_button = box.addButton(self.tr("Un fichier…"), QMessageBox.ButtonRole.AcceptRole)
+            folder_button = box.addButton(self.tr("Un dossier…"), QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(self.tr("Annuler"), QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is file_button:
+                path, _ = QFileDialog.getOpenFileName(self, self.tr("Fichier à envoyer"), self.local.text())
+            elif box.clickedButton() is folder_button:
+                path = QFileDialog.getExistingDirectory(self, self.tr("Dossier à envoyer"), self.local.text())
+            else:
+                return
         else:
             path = QFileDialog.getExistingDirectory(self, self.tr("Dossier local"), self.local.text())
         if path:

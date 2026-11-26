@@ -16,6 +16,40 @@ from smftp.utils.profiles import normalize_profile, profile_for, identity
 from smftp.workers.transfer import Transfer
 
 
+HELP_HTML = """
+<h2>Bien démarrer</h2>
+<p><b>Nouvelle connexion</b> (Ctrl+K) : choisissez SFTP de préférence (chiffré), puis l’hôte, l’utilisateur et le mot de passe.
+Cochez « Mémoriser » pour garder le mot de passe dans le coffre-fort Windows. Ensuite, un double-clic sur le serveur dans
+« Mes serveurs » suffit. Vos sites FileZilla s’importent par <b>Serveurs → Importer</b>.</p>
+<h2>Fichiers</h2>
+<p>À gauche votre ordinateur, à droite le serveur. Glissez des fichiers d’un panneau à l’autre pour les copier.
+Clic droit : télécharger, renommer, supprimer, permissions, modifier un fichier texte.</p>
+<h2>Transferts</h2>
+<p>L’onglet <b>Transferts</b> montre la file : pause, annulation, relance. Chaque fichier est vérifié après la copie
+(taille, et empreinte quand le serveur le permet). Un fichier existant n’est jamais remplacé sans votre accord.</p>
+<h2>Synchronisation</h2>
+<p><b>Outils → Synchroniser les dossiers</b> compare les deux dossiers affichés et vous montre la liste avant toute copie.
+Le <b>mode miroir</b> supprime aussi dans la destination ce qui n’existe plus dans la source : vérifiez l’aperçu.</p>
+<h2>Terminal SSH, tâches planifiées, assistant</h2>
+<p>Un profil « SSH (terminal) » ouvre une console. <b>Outils → Tâches planifiées</b> lance des envois, téléchargements
+ou synchronisations à heure fixe, tant que SMFTP est ouvert (ou réduit dans la zone de notification).
+L’<b>Assistant IA</b> répond à vos questions et prépare des actions ; chacune vous est demandée avant d’être faite.</p>
+<h2>Raccourcis</h2>
+<table cellpadding="3">
+<tr><td>Ctrl+K</td><td>Nouvelle connexion</td><td>Ctrl+R</td><td>Reconnecter</td></tr>
+<tr><td>F5</td><td>Actualiser</td><td>Ctrl+F</td><td>Rechercher dans le dossier</td></tr>
+<tr><td>Entrée</td><td>Ouvrir</td><td>Retour arrière, Alt+↑</td><td>Dossier parent</td></tr>
+<tr><td>Alt+← / Alt+→</td><td>Dossier précédent / suivant</td><td>Ctrl+N</td><td>Nouveau dossier</td></tr>
+<tr><td>F2</td><td>Renommer</td><td>Suppr</td><td>Supprimer</td></tr>
+<tr><td>Ctrl+C / X / V</td><td>Copier / couper / coller</td><td>Ctrl+Maj+F</td><td>Recherche dans les sous-dossiers</td></tr>
+<tr><td>Ctrl+Maj+T</td><td>Nouvelle session de terminal</td><td>Ctrl+Maj+I</td><td>Assistant</td></tr>
+<tr><td>Alt+lettre</td><td>Ouvrir un menu (Alt+F : Fichier…)</td><td>F1</td><td>Cette aide</td></tr>
+</table>
+<p>Documentation complète : <a href="https://github.com/Smeth/smftp#readme">github.com/Smeth/smftp</a> ·
+<a href="https://github.com/Smeth/smftp/blob/main/docs/CONFIDENTIALITE.md">confidentialité</a></p>
+"""
+
+
 class WorkspaceFeatures:
     def initialize_features(self):
         self.clipboard_files = None
@@ -39,7 +73,7 @@ class WorkspaceFeatures:
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray.show()
         menu = self.menuBar().addMenu(self.tr("Fichier"))
-        self.add_command(menu, "Nouvelle connexion…", lambda: self.new_connection(), "Ctrl+Shift+N")
+        self.add_command(menu, "Nouvelle connexion…", lambda: self.new_connection(), "Ctrl+K")
         self.add_command(menu, "Gestionnaire de sites…", self.manage_sites, "Ctrl+Shift+S")
         self.add_command(menu, "Reconnecter", self.reconnect, "Ctrl+R")
         self.add_command(menu, "Déconnecter", self.disconnect_session)
@@ -58,9 +92,9 @@ class WorkspaceFeatures:
             ("Couper", lambda: self.copy_files(True), "Ctrl+X"),
             ("Coller", self.paste_files, "Ctrl+V"),
             ("Sélectionner tout", self.select_all_files, "Ctrl+A"),
-            ("Nouveau dossier", lambda: self.file_action("mkdir"), ""),
-            ("Renommer", lambda: self.file_action("rename"), ""),
-            ("Supprimer", lambda: self.file_action("remove"), ""),
+            ("Nouveau dossier\tCtrl+N", lambda: self.file_action("mkdir"), ""),
+            ("Renommer\tF2", lambda: self.file_action("rename"), ""),
+            ("Supprimer\tSuppr", lambda: self.file_action("remove"), ""),
             ("Propriétés", lambda: self.file_action("properties"), "Alt+Return"),
             ("Recherche récursive…", self.recursive_search, "Ctrl+Shift+F")]:
             self.add_command(edit, title, callback, shortcut)
@@ -72,12 +106,13 @@ class WorkspaceFeatures:
             ("Annuler tous les transferts…", self.cancel_transfers),
             ("Relancer la sélection", self.transfers.retry), ("Effacer les tâches réussies", self.transfers.clear_finished),
             ("Effacer les tâches échouées…", self.transfers.clear_failed),
-            ("Limites et conflits…", self.preferences)]:
+            ("Préférences de transfert…", self.preferences)]:
             self.add_command(transfers, title, callback)
         display = self.display_menu
         self.add_command(display, "Vue Fichiers", lambda: self.set_view("files"))
         self.add_command(display, "Vue Terminal", lambda: self.set_view("terminal"))
         display.addSeparator()
+        display.addAction(self.local_hidden_action)
         self.remote_hidden_action = self.add_command(display, "Fichiers distants cachés", self.remote.show_hidden, checkable=True)
         self.icon_view_action = self.add_command(display, "Vue en icônes", self.set_icon_views, checkable=True)
         self.vertical_action = self.add_command(display, "Panneaux verticaux", lambda checked: self.panel_splitter.setOrientation(
@@ -352,6 +387,22 @@ class WorkspaceFeatures:
                 lambda checked=False, p=profile: self.connect_profile(p))
         if not self.recent_menu.actions():
             self.recent_menu.addAction(self.tr("Aucune connexion récente")).setEnabled(False)
+        else:
+            self.recent_menu.addSeparator()
+            self.recent_menu.addAction(self.tr("Effacer la liste")).triggered.connect(self.clear_recent)
+
+    def clear_recent(self):
+        self.recent_sites = []
+        self.settings.setValue("recent_sites", [])
+        self.update_recent_menu()
+
+    def forget_recent(self, profile_identity):
+        """A deleted profile leaves the recent list too."""
+        kept = [site for site in self.recent_sites if isinstance(site, dict) and identity(site) != profile_identity]
+        if len(kept) != len(self.recent_sites):
+            self.recent_sites = kept
+            self.settings.setValue("recent_sites", kept)
+            self.update_recent_menu()
 
     def manage_sites(self):
         dialog = QDialog(self)
@@ -379,14 +430,32 @@ class WorkspaceFeatures:
             if site:
                 dialog.accept()
                 callback(site)
-        for title, callback in [("Connecter", lambda: chosen(self.connect_profile)),
-            ("Modifier", lambda: chosen(self.new_connection)), ("Supprimer", lambda: chosen(self.delete_profile)),
-            ("Nouveau", lambda: (dialog.accept(), self.new_connection()))]:
+        needs_profile = []
+        for title, callback, on_profile in [("Connecter", lambda: chosen(self.connect_profile), True),
+            ("Modifier", lambda: chosen(self.new_connection), True), ("Supprimer", lambda: chosen(self.delete_profile), True),
+            ("Nouveau", lambda: (dialog.accept(), self.new_connection()), False)]:
             button = QPushButton(self.tr(title))
             button.clicked.connect(callback)
             row.addWidget(button)
+            if on_profile:
+                needs_profile.append(button)
+        row.addStretch()
+        close = QPushButton(self.tr("Fermer"))
+        close.clicked.connect(dialog.reject)
+        row.addWidget(close)
+
+        def follow_selection():
+            item = tree.currentItem()
+            selected = bool(item and item.data(0, Qt.ItemDataRole.UserRole))
+            for button in needs_profile:
+                button.setEnabled(selected)
+        tree.currentItemChanged.connect(lambda *args: follow_selection())
+        follow_selection()
+        if not self.sites:
+            tree.setHeaderLabels([self.tr("Aucun profil : cliquez sur « Nouveau » ou importez vos sites (menu Serveurs).")])
         tree.itemDoubleClicked.connect(lambda *args: chosen(self.connect_profile))
         layout.addLayout(row)
+        self.site_manager = dialog
         dialog.exec()
 
     def schedule_defaults(self):
@@ -499,9 +568,11 @@ class WorkspaceFeatures:
 
     def prepare_external_drag(self):
         if not self.online:
+            self.statusBar().showMessage(self.tr("Connectez un serveur pour préparer un glisser-déposer."), 5000)
             return
         selected = self.remote.selected()
         if not selected:
+            self.statusBar().showMessage(self.tr("Sélectionnez d’abord des éléments du serveur."), 5000)
             return
         temporary = tempfile.TemporaryDirectory(prefix="smftp-drag-")
         self.temp_dirs.append(temporary)
@@ -523,6 +594,7 @@ class WorkspaceFeatures:
         from smftp.workers.search import SearchWorker
         panel = self.active_panel()
         if panel.remote and not self.online:
+            self.statusBar().showMessage(self.tr("Recherche distante : connectez d’abord un serveur."), 5000)
             return
         pattern, ok = QInputDialog.getText(self, self.tr("Recherche récursive"), self.tr("Nom ou motif (ex. *.php) :"))
         if not ok or not pattern:
@@ -597,14 +669,21 @@ class WorkspaceFeatures:
         self.remote.set_icon_mode(enabled)
 
     def show_help(self):
-        QMessageBox.information(self, self.tr("Documentation"), self.tr(
-            "Double-cliquez sur un profil pour vous connecter directement. Clic droit → Modifier pour changer les identifiants.\n"
-            "Clé SSH : utilisez Parcourir dans le formulaire.\n\n"
-            "Ctrl+K : connexion · Ctrl+R : reconnecter · F5 : actualiser\n"
-            "F2 : renommer · Suppr : supprimer · Ctrl+N : dossier\n"
-            "Ctrl+C/X/V : copier/couper/coller · Ctrl+Shift+F : recherche récursive\n"
-            "La file sauvegardée est restaurée en pause. Connectez le profil, puis Reprendre tout.\n"
-            "Glisser vers Windows : clic droit distant → Préparer le glisser-déposer externe, puis glisser après téléchargement."))
+        """Short guide in the window, the full documentation online."""
+        from PySide6.QtWidgets import QDialog, QTextBrowser, QVBoxLayout, QDialogButtonBox
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self.tr("Documentation et raccourcis"))
+        dialog.resize(720, 620)
+        layout = QVBoxLayout(dialog)
+        text = QTextBrowser()
+        text.setOpenExternalLinks(True)
+        text.setHtml(self.tr(HELP_HTML))
+        layout.addWidget(text)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText(self.tr("Fermer"))
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
 
     def ftp_command(self):
         if not self.online or self.connection.protocol not in ("FTP", "FTPS", "FTPSI"):

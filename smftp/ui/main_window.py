@@ -38,7 +38,8 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("SMFTP — Votre espace de transfert")
+        self.base_title = "SMFTP — Votre espace de transfert"
+        self.setWindowTitle(self.base_title)
         self.setMinimumSize(940, 620)
         self.fit_to_screen()
         self.connection = None
@@ -133,7 +134,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.disconnect_button.setObjectName("compact")
         self.disconnect_button.setFixedHeight(24)
         self.disconnect_button.setEnabled(False)
-        self.disconnect_button.clicked.connect(self.disconnect_session)
+        self.disconnect_button.clicked.connect(self.disconnect_or_cancel)
         self.remote.title_row.addWidget(self.disconnect_button)
         panels.addWidget(self.local)
         panels.addWidget(self.remote)
@@ -212,8 +213,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.thread.finished.connect(self.session.deleteLater)
         self.thread.finished.connect(self.finish_close)
         self.file_shortcuts = []
-        for text, key, callback in [("Nouvelle connexion", "Ctrl+K", lambda: self.new_connection()),
-                                     ("Actualiser", "F5", self.refresh),
+        for text, key, callback in [("Actualiser", "F5", self.refresh),
                                      ("Rechercher", "Ctrl+F", self.focus_search),
                                      ("Nouveau dossier", "Ctrl+N", lambda: self.file_action("mkdir")),
                                      # Suppr and F2 act only on the file panel that has the
@@ -224,16 +224,14 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             action.setShortcut(QKeySequence(key))
             action.triggered.connect(callback)
             self.addAction(action)
-            if key != "Ctrl+K":
-                self.file_shortcuts.append(action)
-        hidden = QAction(self.tr("Afficher les fichiers locaux cachés"), self)
+            self.file_shortcuts.append(action)
+        hidden = QAction(self.tr("Fichiers locaux cachés"), self)
         hidden.setCheckable(True)
         hidden.toggled.connect(self.local.show_hidden)
         self.local_hidden_action = hidden
         self.display_menu = self.menuBar().addMenu(self.tr("Affichage"))
-        self.display_menu.addAction(hidden)
         sites_menu = self.menuBar().addMenu(self.tr("Serveurs"))
-        for title, callback in [("Importer JSON / FileZilla…", self.import_sites), ("Exporter les signets…", self.export_sites)]:
+        for title, callback in [("Importer JSON / FileZilla…", self.import_sites), ("Exporter les profils…", self.export_sites)]:
             sites_menu.addAction(self.tr(title)).triggered.connect(callback)
         tools_menu = self.menuBar().addMenu(self.tr("Outils"))
         self.tools_menu = tools_menu
@@ -350,6 +348,7 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
 
     def new_connection(self, site=None):
         if self.busy:
+            self.statusBar().showMessage(self.tr("Une connexion est déjà en cours : attendez ou cliquez sur « Annuler »."), 5000)
             return
         dialog = ConnectionDialog(self, site)
         if dialog.exec():
@@ -445,15 +444,30 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
             save_sites(remaining)
             self.sites = remaining
             self.refresh_sites()
+            self.forget_recent(connection.identity)
         except Exception:
             self.on_error(self.tr("Suppression incomplète : vérifiez l’accès au coffre-fort et au fichier des profils. Le profil est conservé pour pouvoir réessayer."))
+
+    def disconnect_or_cancel(self):
+        if self.busy and not self.online:
+            self.cancel_connection()
+        else:
+            self.disconnect_session()
+
+    def cancel_connection(self):
+        self.log(self.tr("Annulation de la connexion…"))
+        self.disconnect_button.setEnabled(False)
+        self.retry_timer.stop()
+        self.session.abort_connect()
 
     def start_connection(self):
         self.set_view("files")
         self.activity_tabs.setCurrentWidget(self.log_panel)
         self.busy = True
         self.connect_button.setEnabled(False)
-        self.disconnect_button.setEnabled(False)
+        self.disconnect_button.setText(self.tr("Annuler"))
+        self.disconnect_button.setToolTip(self.tr("Arrêter la tentative de connexion"))
+        self.disconnect_button.setEnabled(True)
         self.statusBar().showMessage(self.tr("Connexion en cours…"))
         self.log(self.tr("Ouverture d’une connexion %s.") % protocol_label(self.connection.protocol))
         self.connect_requested.emit(self.connection)
@@ -461,7 +475,10 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
     def on_connected(self, path):
         self.online = True
         self.update_site_states()
+        self.disconnect_button.setText(self.tr("Déconnecter"))
+        self.disconnect_button.setToolTip("")
         self.disconnect_button.setEnabled(True)
+        self.setWindowTitle(f"SMFTP — {self.connection.name or self.connection.host}")
         self.statusBar().showMessage(f"●  Connecté    •    {self.connection.host}    •    {protocol_label(self.connection.protocol)}")
         self.log(self.tr("Connexion établie. Lecture du dossier distant…"))
         self.record_recent_connection()
@@ -593,18 +610,39 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
                                             conflict=self.settings.value("conflict", "ask")))
 
     def context_menu(self, panel, point):
+        self.build_context_menu(panel).exec(point)
+
+    def build_context_menu(self, panel):
+        """Each command is enabled only when it can act on the current selection."""
         menu = QMenu(self)
-        for title, operation in [("Télécharger" if panel.remote else "Téléverser", "transfer"),
-                                 ("Nouveau dossier", "mkdir"), ("Renommer", "rename"),
-                                 ("Supprimer", "remove"), ("Propriétés", "properties")]:
+        selected = panel.selected()
+        count = len(selected)
+        one_file = count == 1 and not selected[0][1]
+        server = self.online and not self.busy  # Needed by every remote command and by uploads.
+        usable = server if panel.remote else True
+        for title, operation, enabled in [
+                ("Télécharger" if panel.remote else "Téléverser", "transfer", count > 0 and server),
+                ("Nouveau dossier", "mkdir", usable), ("Renommer", "rename", usable and count == 1),
+                ("Supprimer", "remove", usable and count > 0), ("Propriétés", "properties", usable and count > 0)]:
             action = menu.addAction(self.tr(title))
+            action.setEnabled(enabled)
             action.triggered.connect(lambda checked=False, op=operation: self.file_action(op, panel))
         if panel.remote:
-            menu.addAction(self.tr("Permissions…")).triggered.connect(lambda: self.file_action("chmod", panel))
-            menu.addAction(self.tr("Modifier / Aperçu…")).triggered.connect(lambda: self.edit_remote(False))
-            menu.addAction(self.tr("Ouvrir dans l’éditeur système…")).triggered.connect(lambda: self.edit_remote(True))
-            menu.addAction(self.tr("Préparer le glisser-déposer externe")).triggered.connect(self.prepare_external_drag)
-        menu.exec(point)
+            for title, callback, enabled in [
+                    ("Permissions…", lambda: self.file_action("chmod", panel), server and count == 1),
+                    ("Modifier / Aperçu…", lambda: self.edit_remote(False), server and one_file),
+                    ("Ouvrir dans l’éditeur système…", lambda: self.edit_remote(True), server and one_file),
+                    ("Préparer le glisser-déposer externe", self.prepare_external_drag, server and count > 0)]:
+                action = menu.addAction(self.tr(title))
+                action.setEnabled(enabled)
+                action.triggered.connect(callback)
+            if not self.online:
+                menu.addSeparator()
+                menu.addAction(self.tr("Non connecté : choisissez un serveur à gauche")).setEnabled(False)
+        elif not self.online:
+            menu.addSeparator()
+            menu.addAction(self.tr("Connectez un serveur pour téléverser")).setEnabled(False)
+        return menu
 
     def ask_name(self, title, current=""):
         """Name dialog; when renaming, the name is filled in and selected up to its extension."""
@@ -664,6 +702,14 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         for action, key in ((self.local_hidden_action, "local_hidden"), (self.remote_hidden_action, "remote_hidden"),
                             (self.icon_view_action, "icon_view"), (self.vertical_action, "vertical_panels")):
             settings.setValue(f"layout/{key}", action.isChecked())
+
+    def reveal(self):
+        """Bring the window back: from the notification area, minimized, or behind others."""
+        if self.isMinimized():
+            self.showNormal()
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def focused_file_action(self, operation):
         focused = QApplication.focusWidget()
@@ -897,7 +943,11 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         from smftp.ui.settings import SettingsDialog
         dialog = SettingsDialog(self.settings, self)
         if dialog.exec():
+            previous = self.settings.value("local_directory", "")
             dialog.persist(self.settings)
+            folder = self.settings.value("local_directory", "")
+            if folder and folder != previous:
+                self.local.navigate(folder)
             self.transfers.concurrency.setValue(dialog.count.value())
             self.transfers.verify = dialog.verify.isChecked()
 
@@ -910,11 +960,26 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
     def synchronize(self):
         from smftp.workers.sync import SyncPlanner
         from PySide6.QtWidgets import QDialog, QComboBox, QCheckBox, QDialogButtonBox, QFormLayout
-        if not self.online or self.sync_running():
+        if not self.online:
+            self.statusBar().showMessage(self.tr("Synchroniser : connectez d’abord un serveur."), 5000)
+            return
+        if self.sync_running():
+            self.statusBar().showMessage(self.tr("Une comparaison ou synchronisation est déjà en cours."), 5000)
             return
         dialog = QDialog(self)
         dialog.setWindowTitle(self.tr("Synchroniser"))
         form = QFormLayout(dialog)
+        local_label = QLabel(self.local.path)
+        local_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        remote_label = QLabel(f"{self.connection.host} : {self.remote.path}")
+        remote_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        form.addRow(self.tr("Dossier local"), local_label)
+        form.addRow(self.tr("Dossier distant"), remote_label)
+        folders_hint = QLabel(self.tr("Ce sont les dossiers ouverts dans les deux panneaux : changez-les avant de "
+                                      "synchroniser si besoin."))
+        folders_hint.setObjectName("muted")
+        folders_hint.setWordWrap(True)
+        form.addRow(folders_hint)
         direction = QComboBox()
         direction.addItems([self.tr("Local → Distant"), self.tr("Distant → Local")])
         form.addRow(self.tr("Sens de copie"), direction)
@@ -942,7 +1007,25 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.sync_worker.note.connect(self.log)
         self.sync_worker.planned.connect(lambda plan: self.show_sync_plan(plan, connection, local, remote, upload))
         self.log(self.tr("Comparaison récursive des dossiers en cours…"))
-        self.sync_worker.start()
+        # Non-modal progress with a Stop button: a large tree can take minutes to compare.
+        from PySide6.QtWidgets import QProgressDialog
+        progress = QProgressDialog(self.tr("Comparaison des dossiers…"), self.tr("Arrêter"), 0, 0, self)
+        progress.setWindowTitle(self.tr("Synchroniser"))
+        progress.setMinimumDuration(400)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        worker = self.sync_worker
+        worker.progress.connect(lambda count: progress.setLabelText(
+            self.tr("Comparaison des dossiers… %1 élément(s) examiné(s)").replace("%1", str(count))))
+
+        def stop():
+            worker.requestInterruption()
+            self.log(self.tr("Synchronisation : comparaison arrêtée."))
+        progress.canceled.connect(stop)
+        worker.finished.connect(progress.close)
+        worker.finished.connect(progress.deleteLater)
+        self.sync_progress = progress
+        worker.start()
 
     def show_sync_plan(self, plan, connection, local, remote, upload):
         import posixpath
@@ -1074,7 +1157,11 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
     def edit_remote(self, external=False):
         import tempfile
         selected = self.remote.selected()
-        if not self.online or len(selected) != 1 or selected[0][1]:
+        if not self.online:
+            self.statusBar().showMessage(self.tr("Connectez un serveur pour ouvrir ses fichiers."), 5000)
+            return
+        if len(selected) != 1 or selected[0][1]:
+            self.statusBar().showMessage(self.tr("Sélectionnez un seul fichier (pas un dossier) à ouvrir."), 5000)
             return
         remote = selected[0][0]
         plain_text = False
@@ -1229,7 +1316,9 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         self.online = False
         self.update_site_states()
         self.pending_saves.clear()
+        self.disconnect_button.setText(self.tr("Déconnecter"))
         self.disconnect_button.setEnabled(False)
+        self.setWindowTitle(self.base_title)
         self.remote.view.clear()
         self.remote.icons.clear()
         self.remote.last_entries = []
@@ -1248,6 +1337,9 @@ class MainWindow(WorkspaceFeatures, QMainWindow):
         # Full diagnostics arrive in the preceding progress signal.
         self.busy = False
         self.connect_button.setEnabled(True)
+        if not self.online:
+            self.disconnect_button.setText(self.tr("Déconnecter"))
+            self.disconnect_button.setEnabled(False)
         self.activity_tabs.setCurrentWidget(self.log_panel)
         summary = error.summary if isinstance(error, ErrorInfo) else str(error)
         if not isinstance(error, ErrorInfo):
