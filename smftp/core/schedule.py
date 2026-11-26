@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 import tempfile
 import uuid
-from smftp.i18n import tr
+from smftp.i18n import tr, N_
 
 # Labels: French source texts, translated where they are shown (tr(label)).
 KINDS = {"sync": "Synchroniser (nouveaux et modifiés)", "upload": "Envoyer", "download": "Télécharger"}
@@ -30,6 +30,61 @@ MISSED_AFTER = timedelta(minutes=2)
 
 RUNNING, SUCCESS, PARTIAL, FAILED, SKIPPED, INTERRUPTED = (
     "En cours", "Réussi", "Partiel", "Échoué", "Ignoré", "Interrompu")
+
+
+class Detail(str):
+    """A history detail: the text in the interface language, plus its neutral form
+    (French source text and parameters) so that the history can be shown again in
+    another language. Mark the source with N_() where it is written."""
+
+    def __new__(cls, source: str, **args):
+        args = {key: str(value) for key, value in args.items()}
+        text = super().__new__(cls, tr(source).format(**args))
+        text.source, text.args = source, args
+        return text
+
+
+def store_detail(row: dict, detail) -> None:
+    """Put a detail in a history row; only simple values are kept (see ScheduleStore.load)."""
+    row["detail"] = str(detail)
+    if isinstance(detail, Detail):
+        row["detail_source"] = detail.source
+        row["detail_args"] = json.dumps(detail.args, ensure_ascii=False)
+    else:
+        row.pop("detail_source", None)
+        row.pop("detail_args", None)
+
+
+def _neutral(row: dict):
+    source = row.get("detail_source")
+    if not isinstance(source, str) or not source:
+        return None
+    try:
+        args = json.loads(row.get("detail_args") or "{}")
+        if not isinstance(args, dict):
+            return None
+        source.format(**args)  # Placeholders and parameters must match.
+        return source, args
+    except (ValueError, KeyError, IndexError, TypeError):
+        return None
+
+
+def detail_text(row: dict) -> str:
+    """The detail in the interface language; older rows only have the stored text."""
+    neutral = _neutral(row)
+    if neutral is None:
+        return str(row.get("detail", "") or "")
+    source, args = neutral
+    try:
+        return tr(source).format(**args)
+    except (KeyError, IndexError, ValueError):
+        return source.format(**args)
+
+
+def detail_french(row: dict) -> str:
+    """The detail in French (for the assistant's model, which reads French)."""
+    neutral = _neutral(row)
+    return neutral[0].format(**neutral[1]) if neutral else str(row.get("detail", "") or "")
 
 
 def now() -> datetime:
@@ -283,7 +338,7 @@ class ScheduleStore:
         for row in self.history:
             if row.get("status") == RUNNING:
                 row["status"] = INTERRUPTED
-                row["detail"] = tr("SMFTP a été fermé pendant l’exécution.")
+                store_detail(row, Detail(N_("SMFTP a été fermé pendant l’exécution.")))
         return problems
 
     def save(self) -> None:

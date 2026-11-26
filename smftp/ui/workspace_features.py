@@ -24,7 +24,12 @@ Cochez « Mémoriser » pour garder le mot de passe dans le coffre-fort Windows.
 « Mes serveurs » suffit. Vos sites FileZilla s’importent par <b>Serveurs → Importer</b>.</p>
 <h2>Fichiers</h2>
 <p>À gauche votre ordinateur, à droite le serveur. Glissez des fichiers d’un panneau à l’autre pour les copier.
-Clic droit : télécharger, renommer, supprimer, permissions, modifier un fichier texte.</p>
+Clic droit : télécharger, renommer, supprimer, permissions (aussi sur tout le contenu d’un dossier), modifier un fichier texte.</p>
+<h2>Signets, connexion rapide, navigation synchronisée</h2>
+<p><b>Signets → Ajouter un signet</b> (Ctrl+D) retient les deux dossiers ouverts pour le serveur connecté ; un clic sur le
+signet les rouvre ensemble. La <b>barre de connexion rapide</b> (Affichage) se connecte sans créer de profil : hôte ou adresse
+complète (sftp://moi@hôte:22/dossier), SFTP par défaut. <b>Affichage → Navigation synchronisée</b> (bouton ⇄ du panneau
+serveur) ouvre de l’autre côté le dossier correspondant à celui que vous ouvrez.</p>
 <h2>Transferts</h2>
 <p>L’onglet <b>Transferts</b> montre la file : pause, annulation, relance. Chaque fichier est vérifié après la copie
 (taille, et empreinte quand le serveur le permet). Un fichier existant n’est jamais remplacé sans votre accord.</p>
@@ -44,7 +49,8 @@ L’<b>Assistant IA</b> répond à vos questions et prépare des actions ; chacu
 <tr><td>F2</td><td>Renommer</td><td>Suppr</td><td>Supprimer</td></tr>
 <tr><td>Ctrl+C / X / V</td><td>Copier / couper / coller</td><td>Ctrl+Maj+F</td><td>Recherche dans les sous-dossiers</td></tr>
 <tr><td>Ctrl+Maj+T</td><td>Nouvelle session de terminal</td><td>Ctrl+Maj+I</td><td>Assistant</td></tr>
-<tr><td>Alt+lettre</td><td>Ouvrir un menu (Alt+F : Fichier…)</td><td>F1</td><td>Cette aide</td></tr>
+<tr><td>Ctrl+D</td><td>Ajouter un signet</td><td>Ctrl+Maj+S</td><td>Gestionnaire de sites</td></tr>
+<tr><td>Alt+lettre</td><td>Ouvrir un menu (Alt+F : Fichier, Alt+G : Signets…)</td><td>F1</td><td>Cette aide</td></tr>
 </table>
 <p>Documentation complète : <a href="https://github.com/Smeth/smftp#readme">github.com/Smeth/smftp</a> ·
 <a href="https://github.com/Smeth/smftp/blob/main/docs/CONFIDENTIALITE.md">confidentialité</a></p>
@@ -58,7 +64,12 @@ Tick “Remember” to keep the password in the Windows vault. After that, doubl
 “My servers” is enough. Your FileZilla sites can be imported with <b>Servers → Import</b>.</p>
 <h2>Files</h2>
 <p>Your computer on the left, the server on the right. Drag files from one panel to the other to copy them.
-Right click: download, rename, delete, permissions, edit a text file.</p>
+Right click: download, rename, delete, permissions (also on all the contents of a folder), edit a text file.</p>
+<h2>Bookmarks, quick connect, synchronized browsing</h2>
+<p><b>Bookmarks → Add a bookmark</b> (Ctrl+D) remembers the two open folders for the connected server; clicking the
+bookmark opens both again. The <b>quick connect bar</b> (View) connects without creating a profile: host or full address
+(sftp://me@host:22/folder), SFTP by default. <b>View → Synchronized browsing</b> (⇄ button of the server panel)
+opens on the other side the folder matching the one you open.</p>
 <h2>Transfers</h2>
 <p>The <b>Transfers</b> tab shows the queue: pause, cancel, retry. Every file is checked after copying
 (size, and checksum when the server supports it). An existing file is never replaced without your consent.</p>
@@ -78,7 +89,8 @@ The <b>AI Assistant</b> answers your questions and prepares actions; each one is
 <tr><td>F2</td><td>Rename</td><td>Del</td><td>Delete</td></tr>
 <tr><td>Ctrl+C / X / V</td><td>Copy / cut / paste</td><td>Ctrl+Shift+F</td><td>Search in subfolders</td></tr>
 <tr><td>Ctrl+Shift+T</td><td>New terminal session</td><td>Ctrl+Shift+I</td><td>Assistant</td></tr>
-<tr><td>Alt+letter</td><td>Open a menu (Alt+F: File…)</td><td>F1</td><td>This help</td></tr>
+<tr><td>Ctrl+D</td><td>Add a bookmark</td><td>Ctrl+Shift+S</td><td>Site manager</td></tr>
+<tr><td>Alt+letter</td><td>Open a menu (Alt+F: File, Alt+B: Bookmarks…)</td><td>F1</td><td>This help</td></tr>
 </table>
 <p>Full documentation: <a href="https://github.com/Smeth/smftp#readme">github.com/Smeth/smftp</a> ·
 <a href="https://github.com/Smeth/smftp/blob/main/docs/CONFIDENTIALITE.md">privacy</a></p>
@@ -189,7 +201,8 @@ class WorkspaceFeatures:
             self.add_command(help_menu, "Rechercher les mises à jour…", self.check_for_updates)
         self.add_command(help_menu, "À propos", self.show_about)
         self.remote.file_opened.connect(lambda: self.edit_remote(False))
-        order = ["Fichier", "Édition", "Affichage", "Serveurs", "Transferts", "Outils", "Aide"]
+        self.initialize_navigation()
+        order = ["Fichier", "Édition", "Affichage", "Serveurs", "Signets", "Transferts", "Outils", "Aide"]
         actions = list(self.menuBar().actions())
         for action in actions:
             self.menuBar().removeAction(action)
@@ -201,6 +214,7 @@ class WorkspaceFeatures:
         # Keyed by the displayed (translated) title, so it works in every language.
         mnemonics = {self.tr("Fichier"): self.tr("&Fichier"), self.tr("Édition"): self.tr("É&dition"),
                      self.tr("Affichage"): self.tr("&Affichage"), self.tr("Serveurs"): self.tr("&Serveurs"),
+                     self.tr("Signets"): self.tr("Si&gnets"),
                      self.tr("Transferts"): self.tr("&Transferts"), self.tr("Outils"): self.tr("&Outils"),
                      self.tr("Aide"): self.tr("A&ide")}
         for action in self.menuBar().actions():

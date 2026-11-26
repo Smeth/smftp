@@ -62,7 +62,7 @@ def test_menus_open_with_alt_letters():
     window = new_window()
     try:
         titles = [action.text() for action in window.menuBar().actions()]
-        assert titles == ["&Fichier", "É&dition", "&Affichage", "&Serveurs", "&Transferts", "&Outils", "A&ide"]
+        assert titles == ["&Fichier", "É&dition", "&Affichage", "&Serveurs", "Si&gnets", "&Transferts", "&Outils", "A&ide"]
     finally:
         close_window(window)
 
