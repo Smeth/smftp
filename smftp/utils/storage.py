@@ -47,7 +47,7 @@ def clean_stale_temporary(directories=None, older_than: float = 86400) -> int:
     import time
     # Exactly the names tempfile.TemporaryDirectory gives SMFTP's folders: a user's
     # own "smftp-backup" folder in a chosen temporary directory is never touched.
-    pattern = re.compile(r"smftp-(?:copy-|drag-)?[a-z0-9_]{8}")
+    pattern = re.compile(r"smftp-(?:copy-|drag-|update-)?[a-z0-9_]{8}")
     removed = 0
     limit = time.time() - older_than
     for base in directories or [tempfile.gettempdir()]:

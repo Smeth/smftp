@@ -1,7 +1,9 @@
 <#
 Build a release for one channel.
 
-  github / uptodown : dist\SMFTP-<version>-setup-x64.exe (Inno Setup 6) and a portable zip.
+  github / uptodown : dist\SMFTP-<version>-setup-x64.exe (Inno Setup 6), a portable zip
+                      and dist\SHA256SUMS.txt (checked by SMFTP before installing an update;
+                      publish them with tools\publish_release.ps1).
   store             : dist\SMFTP-<version>.0-x64.msix for Partner Center (signed by the Store).
 
 Signing (github / uptodown): pass the thumbprint of a code-signing certificate
@@ -51,6 +53,17 @@ function Sign-Files([string[]]$paths) {
     if ($LASTEXITCODE -ne 0) { throw 'La signature a échoué.' }
 }
 
+function Write-Checksums([string[]]$paths) {
+    # SHA256SUMS.txt of the release: SMFTP refuses to run a downloaded installer that does not match it.
+    $lines = foreach ($path in $paths) {
+        $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
+        "$hash  $([System.IO.Path]::GetFileName($path))"
+    }
+    $sums = Join-Path $PSScriptRoot 'dist\SHA256SUMS.txt'
+    [System.IO.File]::WriteAllText($sums, (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+    Write-Host "Empreintes : $sums"
+}
+
 if ($Target -eq 'store') {
     & $python tools\make_msix.py dist\SMFTP dist --name $IdentityName --publisher $Publisher --publisher-display-name $PublisherDisplayName
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -73,6 +86,7 @@ if (-not $iscc) {
 }
 if (-not $iscc) {
     Write-Warning 'Inno Setup 6 introuvable : installeur non créé (winget install JRSoftware.InnoSetup).'
+    Write-Checksums @($zip)
     exit 0
 }
 & $iscc "/DAppVersion=$version" "/DSourceDir=$(Join-Path $PSScriptRoot 'dist\SMFTP')" (Join-Path $PSScriptRoot 'installer\smftp.iss')
@@ -80,4 +94,5 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $setup = Join-Path $PSScriptRoot "dist\SMFTP-$version-setup-x64.exe"
 Sign-Files @($setup)
 Write-Host "Installeur : $setup"
+Write-Checksums @($setup, $zip)
 exit 0

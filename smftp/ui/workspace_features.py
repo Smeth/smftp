@@ -197,8 +197,20 @@ class WorkspaceFeatures:
         self.add_command(help_menu, "Documentation et raccourcis", self.show_help, "F1")
         self.add_command(help_menu, "Diagnostic", self.show_diagnostic)
         from smftp.workers.updates import checks_for_updates
+        self.pending_update = None
         if checks_for_updates():  # Store builds are updated by the Microsoft Store.
             self.add_command(help_menu, "Rechercher les mises à jour…", self.check_for_updates)
+            # Shown when the automatic check found a new version (no modal box at startup).
+            self.update_notice_action = QAction(self)
+            self.update_notice_action.setVisible(False)
+            self.update_notice_action.triggered.connect(lambda: self.show_update_dialog(self.pending_update))
+            help_menu.addAction(self.update_notice_action)
+            self.update_notice_button = QPushButton(self)
+            self.update_notice_button.setFlat(True)
+            self.update_notice_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.update_notice_button.setVisible(False)
+            self.update_notice_button.clicked.connect(lambda: self.show_update_dialog(self.pending_update))
+            self.statusBar().addPermanentWidget(self.update_notice_button)
         self.add_command(help_menu, "À propos", self.show_about)
         self.remote.file_opened.connect(lambda: self.edit_remote(False))
         self.initialize_navigation()
@@ -841,36 +853,222 @@ class WorkspaceFeatures:
         layout.addLayout(row)
         dialog.exec()
 
-    def check_for_updates(self):
-        from smftp.workers.updates import UpdateWorker, checks_for_updates
-        if not checks_for_updates():
-            return
+    # ---------- updates ----------
 
+    def check_for_updates(self):
+        """Aide → Rechercher les mises à jour… : manual check, with its result box."""
+        from smftp.workers.updates import checks_for_updates
+        if checks_for_updates():
+            self.start_update_check(automatic=False)
+
+    def auto_check_for_updates(self):
+        """At startup, at most once a day, in the background; never in the Store build.
+
+        Returns True when a check was started."""
+        from smftp.workers.updates import automatic_check_due, record_check
+        if not automatic_check_due(self.settings):
+            return False
+        if not self.start_update_check(automatic=True):
+            return False
+        record_check(self.settings)
+        return True
+
+    def start_update_check(self, automatic):
+        from smftp.workers.updates import UpdateWorker
         if getattr(self, "update_worker", None) and self.update_worker.isRunning():
-            return
-        self.update_worker = UpdateWorker(self)
+            return False
+        self.update_worker = UpdateWorker(self, automatic=automatic)
         self.update_worker.completed.connect(self._show_update_result)
         self.update_worker.start()
+        return True
 
     def _show_update_result(self, result):
-        from PySide6.QtGui import QDesktopServices
-
+        from smftp.workers.updates import is_ignored
         status = result["status"]
+        if result.get("automatic"):
+            # No box at startup: a notice in the status bar and the Help menu.
+            if status == "update" and not is_ignored(self.settings, result["version"]):
+                self.notify_update(result)
+            return
         if status == "update":
-            answer = QMessageBox.question(
-                self, self.tr("Mise à jour disponible"),
-                self.tr("La version {version} est disponible sur GitHub.\n\nOuvrir la page de téléchargement ?").format(version=result["version"]),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes,
-            )
-            if answer == QMessageBox.StandardButton.Yes:
-                QDesktopServices.openUrl(QUrl(result["url"]))
+            self.notify_update(result)
+            self.show_update_dialog(result)
         elif status == "current":
             QMessageBox.information(self, self.tr("Mises à jour"), self.tr("Vous utilisez déjà la dernière version ({version}).").format(version=result["version"]))
         elif status == "none":
             QMessageBox.information(self, self.tr("Mises à jour"), self.tr("Aucune nouvelle mise à jour disponible."))
-        else:
+        elif status == "error":
             QMessageBox.warning(self, self.tr("Vérification impossible"), self.tr("Impossible de vérifier les mises à jour. Vérifiez votre connexion Internet puis réessayez.\n\n{detail}").format(detail=result.get("detail", "")))
+
+    def notify_update(self, result):
+        """Non-blocking notice of a new version."""
+        self.pending_update = result
+        version = result["version"]
+        if getattr(self, "update_notice_button", None) is not None:
+            self.update_notice_button.setText(self.tr("Mise à jour {version} disponible").format(version=version))
+            self.update_notice_button.setToolTip(self.tr("Voir les nouveautés et installer la mise à jour"))
+            self.update_notice_button.setVisible(True)
+            self.update_notice_action.setText(self.tr("Mise à jour {version} disponible…").format(version=version))
+            self.update_notice_action.setVisible(True)
+        self.statusBar().showMessage(self.tr("SMFTP {version} est disponible : Aide → Mise à jour {version} disponible…").format(version=version), 15000)
+
+    def hide_update_notice(self):
+        self.pending_update = None
+        if getattr(self, "update_notice_button", None) is not None:
+            self.update_notice_button.setVisible(False)
+            self.update_notice_action.setVisible(False)
+
+    def build_update_dialog(self, result):
+        """« Mise à jour disponible » box; ``dialog.choice`` holds the button chosen."""
+        from PySide6.QtWidgets import QPlainTextEdit
+        from smftp.workers.updates import CURRENT_VERSION, can_install_update
+        from smftp.ui.icons import recolor, theme_of
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self.tr("Mise à jour disponible"))
+        dialog.setMinimumWidth(560)
+        dialog.choice = "later"
+        layout = QVBoxLayout(dialog)
+        heading = QLabel(self.tr("SMFTP {version} est disponible (version installée : {current}).").format(
+            version=result["version"], current=CURRENT_VERSION))
+        heading.setWordWrap(True)
+        layout.addWidget(heading)
+        layout.addWidget(QLabel(self.tr("Nouveautés :")))
+        notes = QPlainTextEdit()
+        notes.setReadOnly(True)
+        notes.setPlainText(result.get("notes") or self.tr("Aucune note de version."))
+        notes.setMinimumHeight(220)
+        layout.addWidget(notes)
+        dialog.notes = notes
+        installable = can_install_update()
+        if not installable:
+            hint = QLabel(self.tr("Cette copie de SMFTP n’a pas été installée par l’installeur : "
+                                  "téléchargez la nouvelle version depuis la page de la version."))
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
+        row = QHBoxLayout()
+        dialog.buttons = {}
+        for choice, label, show in (("install", self.tr("Télécharger et installer"), installable),
+                                    ("page", self.tr("Ouvrir la page"), True),
+                                    ("ignore", self.tr("Ignorer cette version"), True),
+                                    ("later", self.tr("Plus tard"), True)):
+            if not show:
+                continue
+            button = QPushButton(label)
+            button.clicked.connect(lambda _=False, c=choice: (setattr(dialog, "choice", c), dialog.accept()))
+            dialog.buttons[choice] = button
+            if choice == "ignore":
+                row.addStretch()
+            row.addWidget(button)
+        (dialog.buttons.get("install") or dialog.buttons["page"]).setDefault(True)
+        layout.addLayout(row)
+        recolor(dialog, theme_of(self))
+        return dialog
+
+    def show_update_dialog(self, result):
+        if not result:
+            return
+        dialog = self.build_update_dialog(result)
+        dialog.exec()
+        self.apply_update_choice(result, dialog.choice)
+
+    def apply_update_choice(self, result, choice):
+        from PySide6.QtGui import QDesktopServices
+        from smftp.workers.updates import ignore_version, safe_release_url
+        if choice == "install":
+            self.start_update_download(result)
+        elif choice == "page":
+            QDesktopServices.openUrl(QUrl(safe_release_url(result.get("url"))))
+        elif choice == "ignore":
+            ignore_version(self.settings, result["version"])
+            self.hide_update_notice()
+            self.statusBar().showMessage(self.tr("La version {version} ne sera plus proposée.").format(version=result["version"]), 6000)
+
+    def start_update_download(self, result):
+        """Download in the background (progress, cancel), then verify the SHA-256."""
+        import shutil
+        from PySide6.QtWidgets import QProgressDialog
+        from smftp.workers.updates import UpdateDownloadWorker
+        if getattr(self, "update_download_worker", None) and self.update_download_worker.isRunning():
+            return
+        folder = tempfile.mkdtemp(prefix="smftp-update-")
+        worker = UpdateDownloadWorker(result, folder, self)
+        self.update_download_worker = worker
+        progress = QProgressDialog(self.tr("Téléchargement de SMFTP {version}…").format(version=result["version"]),
+                                   self.tr("Annuler"), 0, 0, self)
+        progress.setWindowTitle(self.tr("Mise à jour"))
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.setMinimumDuration(0)
+        progress.canceled.connect(worker.requestInterruption)
+        self.update_progress = progress
+
+        def advance(done, total):
+            if total:
+                progress.setMaximum(max(1, int(total) // 1024))
+                progress.setValue(min(int(done) // 1024, progress.maximum()))
+
+        def downloaded(path, sha):
+            progress.close()
+            answer = QMessageBox.question(
+                self, self.tr("Mise à jour"),
+                self.tr("Le fichier téléchargé est vérifié (SHA-256).\n\nSMFTP va se fermer puis lancer l’installation "
+                        "de la version {version}. La file de transferts est conservée. Continuer ?").format(version=result["version"]),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes)
+            if answer == QMessageBox.StandardButton.Yes:
+                self.install_downloaded_update(path, sha)
+            else:
+                shutil.rmtree(folder, ignore_errors=True)
+
+        def failed(message):
+            progress.close()
+            shutil.rmtree(folder, ignore_errors=True)
+            if worker.isInterruptionRequested():
+                self.statusBar().showMessage(self.tr("Téléchargement de la mise à jour annulé."), 5000)
+            else:
+                self.log(self.tr("Mise à jour : {detail}").format(detail=message))
+                QMessageBox.warning(self, self.tr("Mise à jour impossible"), message)
+
+        worker.progress.connect(advance)
+        worker.downloaded.connect(downloaded)
+        worker.failed.connect(failed)
+        worker.start()
+        progress.show()
+
+    def install_downloaded_update(self, path, sha):
+        """Close SMFTP the usual way (transfer queue kept), then start the verified installer."""
+        app = QApplication.instance()
+        self.pending_installer = (path, sha)
+        app.aboutToQuit.connect(self.launch_pending_installer)
+        self.quit_app()
+        if not self.closing and self.isVisible():
+            # "Non" to the closing question: nothing is installed.
+            self.pending_installer = None
+            app.aboutToQuit.disconnect(self.launch_pending_installer)
+            self.statusBar().showMessage(self.tr("Installation de la mise à jour annulée."), 5000)
+        elif not self.closing:
+            app.quit()  # Closed at once: other windows (editors) must not keep SMFTP running.
+
+    def launch_pending_installer(self):
+        from smftp.workers.updates import UpdateError, launch_installer
+        pending, self.pending_installer = getattr(self, "pending_installer", None), None
+        if not pending:
+            return False
+        app = QApplication.instance()
+        handle = getattr(app, "instance_mutex", None)
+        if handle and sys.platform == "win32":
+            # The installer waits for this mutex (AppMutex) to disappear.
+            import ctypes
+            ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(handle))
+            app.instance_mutex = None
+        try:
+            launch_installer(*pending)
+        except (UpdateError, OSError) as error:
+            self.log(self.tr("Mise à jour : {detail}").format(detail=error))
+            return False
+        return True
+
+
 def keyring_version() -> str:
     """keyring exposes no __version__: read it from the installed package."""
     try:

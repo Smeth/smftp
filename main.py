@@ -7,6 +7,27 @@ from smftp.ui.main_window import MainWindow
 from smftp.utils.storage import configure_logging
 
 
+INSTANCE_MUTEX = "SMFTP-Instance"
+
+
+def create_instance_mutex():
+    """Create the named mutex "SMFTP-Instance" for as long as SMFTP runs (Windows only).
+
+    Returns its handle (closed by Windows when the process ends), or None.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        return kernel32.CreateMutexW(None, False, INSTANCE_MUTEX) or None
+    except (OSError, AttributeError):
+        return None
+
+
 def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("SMFTP")
@@ -23,6 +44,9 @@ def main() -> None:
         if not ask_running_instance_to_show():
             QMessageBox.information(None, "SMFTP", i18n.tr("SMFTP est déjà ouvert.\n\nUtilisez la fenêtre existante : deux instances écraseraient mutuellement les profils et la file de transferts."))
         sys.exit(0)
+    # Named mutex watched by the installer (AppMutex in installer/smftp.iss): an update
+    # waits for SMFTP to close instead of replacing files in use.
+    app.instance_mutex = create_instance_mutex()
     logging_available = configure_logging()
     from smftp.utils.storage import clean_stale_temporary
     from PySide6.QtCore import QSettings
@@ -45,6 +69,10 @@ def main() -> None:
             window.log(window.tr("Erreur : ") + problem)
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, lambda: QMessageBox.warning(window, window.tr("Profils"), "\n\n".join(window.site_problems)))
+    if "--smoke-test" not in sys.argv:
+        # Background check, at most once a day (Preferences); never in the Store build.
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(4000, window.auto_check_for_updates)
     if "--smoke-test" in sys.argv:
         from PySide6.QtCore import QTimer
         def finish_smoke() -> None:

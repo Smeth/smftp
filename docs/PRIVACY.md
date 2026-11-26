@@ -25,7 +25,7 @@ The Microsoft Store version keeps these files in the application's private folde
 SMFTP connects only:
 
 1. **To the servers you configure** (FTP, FTPS, SFTP, SSH), for the operations you request or schedule.
-2. **To GitHub** (`api.github.com`), only when you choose *Help → Check for updates*. The request contains no personal data. This command does not exist in the Microsoft Store version, which the Store updates.
+2. **To GitHub** (`api.github.com`, and `github.com` with its file servers to download an update): at startup, at most once a day, to check for a new version (can be turned off in *Preferences → Check for updates automatically*), when you choose *Help → Check for updates*, and when you choose *Download and install*. These requests contain no personal data. The Microsoft Store version, which the Store updates, sends none.
 3. **To the AI service of your choice**, only if you use the assistant (see below).
 
 ## AI assistant (optional)

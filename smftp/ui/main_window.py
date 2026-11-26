@@ -1510,6 +1510,10 @@ class MainWindow(WorkspaceFeatures, NavigationFeatures, QMainWindow):
                     return
         if not self.closing:
             self.save_layout()
+        download = getattr(self, "update_download_worker", None)
+        if download is not None and download.isRunning():
+            download.requestInterruption()
+            download.wait(5000)
         local_active = any(w.isRunning() for w in getattr(self, "local_workers", []))
         sync_active = self.sync_running() or any(w.isRunning() for w in self.search_workers)
         self.terminal.close_all()
