@@ -106,7 +106,7 @@ def main():
     if "--add" in sys.argv:
         added = json.loads(Path(sys.argv[sys.argv.index("--add") + 1]).read_text(encoding="utf-8"))
         keys |= {text for text in added if isinstance(text, str) and text in literals}
-    updated = {text: catalog.get(text, "") for text in sorted(keys, key=str.casefold)}
+    updated = {text: catalog.get(text, "") for text in sorted(keys, key=lambda text: (text.casefold(), text))}
     missing = [text for text, value in updated.items() if not value]
     if "--check" in sys.argv:
         for text in missing:
